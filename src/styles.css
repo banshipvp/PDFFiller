@@ -357,13 +357,7 @@ button:disabled {
 }
 
 .documentScroller {
-  background:
-    linear-gradient(45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(148, 163, 184, 0.14) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(148, 163, 184, 0.14) 75%);
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
-  background-size: 20px 20px;
+  background: #e9eef5;
   overflow: auto;
   overscroll-behavior: contain;
   padding: 30px;
@@ -416,7 +410,7 @@ button:disabled {
 }
 
 .page {
-  background: transparent;
+  background: #ffffff;
   box-shadow: 0 16px 34px rgba(23, 32, 51, 0.18);
   position: relative;
   touch-action: pan-x pan-y;

@@ -1735,8 +1735,9 @@ function PdfPage({
       if (!context) return;
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: context, viewport, background: "rgba(0,0,0,0)" }).promise;
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
     };
     void render();
     return () => {
@@ -1946,8 +1947,9 @@ function Thumbnail({ doc, page, pageSize, active, onClick }: { doc: any; page: n
       if (!context) return;
       canvas.width = viewport.width;
       canvas.height = viewport.height;
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      await pdfPage.render({ canvasContext: context, viewport, background: "rgba(0,0,0,0)" }).promise;
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      await pdfPage.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
     };
     void render();
     return () => {
