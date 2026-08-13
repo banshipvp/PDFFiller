@@ -201,9 +201,9 @@ if (!gotLock) {
     Menu.setApplicationMenu(null);
     pendingPdfPath = findPdfArg(process.argv);
     createWindow();
-    setTimeout(() => {
+    mainWindow.webContents.once("did-finish-load", () => {
       void checkForUpdates(false);
-    }, 3500);
+    });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

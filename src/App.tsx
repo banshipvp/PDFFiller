@@ -475,6 +475,7 @@ function App() {
     percent: 0,
   });
   const [showUpdateGate, setShowUpdateGate] = useState(Boolean(window.pdfFillerDesktop));
+  const [startupReady, setStartupReady] = useState(!window.pdfFillerDesktop);
   const [appVersion, setAppVersion] = useState("development");
   const [status, setStatus] = useState("Ready");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -500,6 +501,7 @@ function App() {
   } | null>(null);
   const activeDrawRef = useRef<string | null>(null);
   const activeEraseRef = useRef(false);
+  const pendingInitialPdfRef = useRef<DesktopPdfPayload | null>(null);
 
   const selected = useMemo(
     () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
@@ -635,11 +637,11 @@ function App() {
       setGithubRepo(settings.githubRepo);
       setUpdateFeedUrl(settings.feedUrl);
       setUpdateStatus(settings.status);
-      if (settings.updateState) setUpdateState(settings.updateState);
+      if (settings.updateState && settings.updateState.phase !== "idle") setUpdateState(settings.updateState);
     });
     void window.pdfFillerDesktop.getInitialPdf().then((payload) => {
       if (!payload) return;
-      void loadPdfBytes(payloadToArrayBuffer(payload.bytes), payload.name, payload.path);
+      pendingInitialPdfRef.current = payload;
     });
     const removeOpenListener = window.pdfFillerDesktop.onPdfOpenedFromSystem((filePath) => {
       void loadDesktopPdfPath(filePath);
@@ -663,9 +665,19 @@ function App() {
   useEffect(() => {
     if (!showUpdateGate) return;
     if (!["not-available", "disabled", "development"].includes(updateState.phase)) return;
-    const timeout = window.setTimeout(() => setShowUpdateGate(false), 900);
+    const timeout = window.setTimeout(() => {
+      setShowUpdateGate(false);
+      setStartupReady(true);
+    }, 900);
     return () => window.clearTimeout(timeout);
   }, [showUpdateGate, updateState.phase]);
+
+  useEffect(() => {
+    if (!startupReady || !pendingInitialPdfRef.current) return;
+    const payload = pendingInitialPdfRef.current;
+    pendingInitialPdfRef.current = null;
+    void loadPdfBytes(payloadToArrayBuffer(payload.bytes), payload.name, payload.path);
+  }, [startupReady]);
 
   useEffect(() => {
     if (!loadedRef.current) {
@@ -1568,6 +1580,21 @@ function App() {
 
   const selectedSignatureAssets = assets.filter((asset) => asset.kind === "signature");
   const selectedInitialAssets = assets.filter((asset) => asset.kind === "initials");
+  const enterEditor = () => {
+    setShowUpdateGate(false);
+    setStartupReady(true);
+  };
+
+  if (isDesktop && !startupReady) {
+    return (
+      <UpdateGate
+        appVersion={appVersion}
+        state={updateState}
+        onUpdate={() => void window.pdfFillerDesktop?.downloadUpdate()}
+        onContinue={enterEditor}
+      />
+    );
+  }
 
   return (
     <div className="shell">
@@ -1975,7 +2002,7 @@ function App() {
           appVersion={appVersion}
           state={updateState}
           onUpdate={() => void window.pdfFillerDesktop?.downloadUpdate()}
-          onContinue={() => setShowUpdateGate(false)}
+          onContinue={enterEditor}
         />
       )}
     </div>
