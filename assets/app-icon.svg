@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="paper" x1="64" y1="24" x2="190" y2="224" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e9f1fb"/>
+    </linearGradient>
+    <linearGradient id="tab" x1="162" y1="26" x2="216" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#bfdbfe"/>
+      <stop offset="1" stop-color="#60a5fa"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="#172033"/>
+  <path d="M67 26h91l49 50v154H67z" fill="url(#paper)"/>
+  <path d="M158 26v51h49z" fill="url(#tab)"/>
+  <path d="M67 26h91l49 50v154H67z" fill="none" stroke="#dbe5f0" stroke-width="6"/>
+  <rect x="48" y="136" width="160" height="60" rx="12" fill="#ef4444"/>
+  <path d="M77 179v-31h21c7 0 13 5 13 12s-6 12-13 12H88v7zm11-15h9c2 0 4-2 4-4s-2-4-4-4h-9z" fill="#fff"/>
+  <path d="M119 179v-31h17c10 0 18 6 18 15s-8 16-18 16zm11-9h6c4 0 7-3 7-7s-3-7-7-7h-6z" fill="#fff"/>
+  <path d="M163 179v-31h27v9h-16v4h14v8h-14v10z" fill="#fff"/>
+  <path d="M89 94h74" stroke="#94a3b8" stroke-width="9" stroke-linecap="round"/>
+  <path d="M89 116h90" stroke="#cbd5e1" stroke-width="8" stroke-linecap="round"/>
+</svg>
