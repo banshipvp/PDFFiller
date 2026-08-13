@@ -838,6 +838,119 @@ button:disabled {
   z-index: 20;
 }
 
+.updateGate {
+  align-items: center;
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(30, 41, 59, 0.84)),
+    #0f172a;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 80;
+}
+
+.updatePanel {
+  background: #ffffff;
+  border: 1px solid rgba(203, 213, 225, 0.85);
+  border-radius: 12px;
+  box-shadow: 0 38px 100px rgba(0, 0, 0, 0.42);
+  max-width: 520px;
+  padding: 30px;
+  width: min(92vw, 520px);
+}
+
+.updateLogo {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.updateLogo strong {
+  color: #0f172a;
+  display: block;
+  font-size: 17px;
+}
+
+.updateLogo span:last-child {
+  color: #64748b;
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+.updatePanel h1 {
+  color: #0f172a;
+  font-size: 25px;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 0 0 10px;
+}
+
+.updatePanel p {
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+.updateProgress {
+  background: #e5edf7;
+  border-radius: 999px;
+  height: 9px;
+  margin: 4px 0 20px;
+  overflow: hidden;
+}
+
+.updateProgress span {
+  background: #2563eb;
+  display: block;
+  height: 100%;
+  transition: width 160ms ease;
+}
+
+.updateActions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  min-height: 40px;
+}
+
+.updateActions button {
+  background: #ffffff;
+  border: 1px solid #d1dbe7;
+  border-radius: 7px;
+  color: #172033;
+  font-weight: 800;
+  min-height: 40px;
+  padding: 9px 14px;
+}
+
+.updateActions .primaryAction {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.updateSpinner {
+  animation: spin 1s linear infinite;
+  border: 3px solid #dbe6f3;
+  border-top-color: #2563eb;
+  border-radius: 999px;
+  display: inline-block;
+  height: 28px;
+  width: 28px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .mergeModal {
   background: #ffffff;
   border: 1px solid rgba(203, 213, 225, 0.9);

@@ -7,6 +7,12 @@ const isDev = process.env.PDF_FILLER_DEV === "1";
 let mainWindow = null;
 let pendingPdfPath = null;
 let currentUpdateStatus = "Updater ready";
+let currentUpdateState = {
+  phase: "idle",
+  status: "Updater ready",
+  version: "",
+  percent: 0,
+};
 
 function updateSettingsPath() {
   return path.join(app.getPath("userData"), "update-settings.json");
@@ -33,6 +39,15 @@ function sendUpdateStatus(status) {
   currentUpdateStatus = status;
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send("updater-status", status);
+  }
+}
+
+function sendUpdateState(patch) {
+  currentUpdateState = { ...currentUpdateState, ...patch };
+  currentUpdateStatus = currentUpdateState.status;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("updater-status", currentUpdateState.status);
+    mainWindow.webContents.send("updater-state", currentUpdateState);
   }
 }
 
@@ -92,59 +107,50 @@ function createWindow() {
 
 async function checkForUpdates(manual = false) {
   if (isDev) {
-    sendUpdateStatus("Updates are disabled while running in development mode.");
+    sendUpdateState({ phase: "development", status: "Updates are disabled while running in development mode.", version: "", percent: 0 });
     return { ok: false, reason: "development" };
   }
 
   const settings = await getUpdateSettings();
   if (!settings.enabled && !manual) {
-    sendUpdateStatus("Automatic update checks are turned off.");
+    sendUpdateState({ phase: "disabled", status: "Automatic update checks are turned off.", version: "", percent: 0 });
     return { ok: false, reason: "disabled" };
   }
   if (settings.provider === "github") {
     const [owner, repo] = String(settings.githubRepo || "").split("/").map((part) => part.trim());
     if (!owner || !repo) {
-      sendUpdateStatus("Add a GitHub repo like owner/repo to enable auto updates.");
+      sendUpdateState({ phase: "error", status: "Add a GitHub repo like owner/repo to enable auto updates.", version: "", percent: 0 });
       return { ok: false, reason: "missing-github-repo" };
     }
     autoUpdater.setFeedURL({ provider: "github", owner, repo });
   } else if (settings.feedUrl) {
     autoUpdater.setFeedURL({ provider: "generic", url: settings.feedUrl });
   } else {
-    sendUpdateStatus("Add an update feed URL to enable auto updates.");
+    sendUpdateState({ phase: "error", status: "Add an update feed URL to enable auto updates.", version: "", percent: 0 });
     return { ok: false, reason: "missing-feed-url" };
   }
 
-  autoUpdater.autoDownload = true;
-  sendUpdateStatus("Checking for updates...");
+  autoUpdater.autoDownload = false;
+  sendUpdateState({ phase: "checking", status: "Checking for updates...", version: "", percent: 0 });
   try {
     await autoUpdater.checkForUpdates();
     return { ok: true };
   } catch (error) {
-    sendUpdateStatus(`Update check failed: ${error.message}`);
+    sendUpdateState({ phase: "error", status: `Update check failed: ${error.message}`, version: "", percent: 0 });
     return { ok: false, reason: error.message };
   }
 }
 
-autoUpdater.on("checking-for-update", () => sendUpdateStatus("Checking for updates..."));
-autoUpdater.on("update-available", (info) => sendUpdateStatus(`Update ${info.version} found. Downloading...`));
-autoUpdater.on("update-not-available", () => sendUpdateStatus("You are on the latest version."));
-autoUpdater.on("download-progress", (progress) => sendUpdateStatus(`Downloading update ${Math.round(progress.percent)}%...`));
-autoUpdater.on("error", (error) => sendUpdateStatus(`Update error: ${error.message}`));
-autoUpdater.on("update-downloaded", async (info) => {
-  sendUpdateStatus(`Update ${info.version} downloaded.`);
-  const result = await dialog.showMessageBox(mainWindow, {
-    type: "info",
-    buttons: ["Restart and install", "Later"],
-    defaultId: 0,
-    cancelId: 1,
-    title: "Update ready",
-    message: `PDF Filler ${info.version} has been downloaded.`,
-    detail: "Restart the app now to install the update.",
-  });
-  if (result.response === 0) {
-    autoUpdater.quitAndInstall(false, true);
-  }
+autoUpdater.on("checking-for-update", () => sendUpdateState({ phase: "checking", status: "Checking for updates...", version: "", percent: 0 }));
+autoUpdater.on("update-available", (info) => sendUpdateState({ phase: "available", status: `Update ${info.version} is ready to download.`, version: info.version, percent: 0 }));
+autoUpdater.on("update-not-available", () => sendUpdateState({ phase: "not-available", status: "You are on the latest version.", version: "", percent: 0 }));
+autoUpdater.on("download-progress", (progress) => sendUpdateState({ phase: "downloading", status: `Downloading update ${Math.round(progress.percent)}%...`, percent: Math.round(progress.percent) }));
+autoUpdater.on("error", (error) => sendUpdateState({ phase: "error", status: `Update error: ${error.message}`, version: "", percent: 0 }));
+autoUpdater.on("update-downloaded", (info) => {
+  sendUpdateState({ phase: "downloaded", status: `Update ${info.version} downloaded. Restarting to install...`, version: info.version, percent: 100 });
+  setTimeout(() => {
+    autoUpdater.quitAndInstall(true, true);
+  }, 900);
 });
 
 const gotLock = app.requestSingleInstanceLock();
@@ -229,7 +235,7 @@ ipcMain.handle("desktop:print", async () => {
 });
 
 ipcMain.handle("desktop:get-update-settings", async () => {
-  return { ...(await getUpdateSettings()), status: currentUpdateStatus };
+  return { ...(await getUpdateSettings()), status: currentUpdateStatus, updateState: currentUpdateState };
 });
 
 ipcMain.handle("desktop:set-update-settings", async (_event, settings) => {
@@ -238,4 +244,19 @@ ipcMain.handle("desktop:set-update-settings", async (_event, settings) => {
 
 ipcMain.handle("desktop:check-for-updates", async () => {
   return checkForUpdates(true);
+});
+
+ipcMain.handle("desktop:download-update", async () => {
+  if (isDev) {
+    sendUpdateState({ phase: "development", status: "Updates are disabled while running in development mode.", version: "", percent: 0 });
+    return { ok: false, reason: "development" };
+  }
+  try {
+    sendUpdateState({ phase: "downloading", status: "Downloading update...", percent: 0 });
+    await autoUpdater.downloadUpdate();
+    return { ok: true };
+  } catch (error) {
+    sendUpdateState({ phase: "error", status: `Update download failed: ${error.message}`, percent: 0 });
+    return { ok: false, reason: error.message };
+  }
 });

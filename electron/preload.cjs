@@ -12,10 +12,16 @@ contextBridge.exposeInMainWorld("pdfFillerDesktop", {
   getUpdateSettings: () => ipcRenderer.invoke("desktop:get-update-settings"),
   setUpdateSettings: (settings) => ipcRenderer.invoke("desktop:set-update-settings", settings),
   checkForUpdates: () => ipcRenderer.invoke("desktop:check-for-updates"),
+  downloadUpdate: () => ipcRenderer.invoke("desktop:download-update"),
   onUpdaterStatus: (callback) => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("updater-status", listener);
     return () => ipcRenderer.removeListener("updater-status", listener);
+  },
+  onUpdaterState: (callback) => {
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on("updater-state", listener);
+    return () => ipcRenderer.removeListener("updater-state", listener);
   },
   onPdfOpenedFromSystem: (callback) => {
     const listener = (_event, filePath) => callback(filePath);

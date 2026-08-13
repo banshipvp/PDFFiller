@@ -466,6 +466,13 @@ function App() {
   const [githubRepo, setGithubRepo] = useState("");
   const [updateFeedUrl, setUpdateFeedUrl] = useState("");
   const [updateStatus, setUpdateStatus] = useState("Updater ready");
+  const [updateState, setUpdateState] = useState<DesktopUpdateState>({
+    phase: window.pdfFillerDesktop ? "checking" : "development",
+    status: window.pdfFillerDesktop ? "Checking for updates..." : "Development mode",
+    version: "",
+    percent: 0,
+  });
+  const [showUpdateGate, setShowUpdateGate] = useState(Boolean(window.pdfFillerDesktop));
   const [appVersion, setAppVersion] = useState("development");
   const [status, setStatus] = useState("Ready");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -612,6 +619,7 @@ function App() {
       setGithubRepo(settings.githubRepo);
       setUpdateFeedUrl(settings.feedUrl);
       setUpdateStatus(settings.status);
+      if (settings.updateState) setUpdateState(settings.updateState);
     });
     void window.pdfFillerDesktop.getInitialPdf().then((payload) => {
       if (!payload) return;
@@ -621,11 +629,23 @@ function App() {
       void loadDesktopPdfPath(filePath);
     });
     const removeUpdateListener = window.pdfFillerDesktop.onUpdaterStatus(setUpdateStatus);
+    const removeUpdateStateListener = window.pdfFillerDesktop.onUpdaterState((state) => {
+      setUpdateState(state);
+      setShowUpdateGate(true);
+    });
     return () => {
       removeOpenListener();
       removeUpdateListener();
+      removeUpdateStateListener();
     };
   }, []);
+
+  useEffect(() => {
+    if (!showUpdateGate) return;
+    if (!["not-available", "disabled", "development"].includes(updateState.phase)) return;
+    const timeout = window.setTimeout(() => setShowUpdateGate(false), 900);
+    return () => window.clearTimeout(timeout);
+  }, [showUpdateGate, updateState.phase]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1728,6 +1748,7 @@ function App() {
                   githubRepo: githubRepo.trim(),
                   feedUrl: updateFeedUrl.trim(),
                 }).then(() => {
+                  setShowUpdateGate(true);
                   void window.pdfFillerDesktop?.checkForUpdates();
                 });
               }}
@@ -1771,6 +1792,68 @@ function App() {
           onMerge={(files) => void mergePdfFiles(files)}
         />
       )}
+      {isDesktop && showUpdateGate && (
+        <UpdateGate
+          appVersion={appVersion}
+          state={updateState}
+          onUpdate={() => void window.pdfFillerDesktop?.downloadUpdate()}
+          onContinue={() => setShowUpdateGate(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function UpdateGate({
+  appVersion,
+  state,
+  onUpdate,
+  onContinue,
+}: {
+  appVersion: string;
+  state: DesktopUpdateState;
+  onUpdate: () => void;
+  onContinue: () => void;
+}) {
+  const canUpdate = state.phase === "available";
+  const canContinue = ["available", "error", "disabled", "development"].includes(state.phase);
+  const busy = state.phase === "checking" || state.phase === "downloading" || state.phase === "downloaded";
+  const title =
+    state.phase === "available"
+      ? `PDF Filler ${state.version} is available`
+      : state.phase === "downloading"
+        ? "Downloading update"
+        : state.phase === "downloaded"
+          ? "Installing update"
+          : state.phase === "error"
+            ? "Update check needs attention"
+            : state.phase === "not-available"
+              ? "PDF Filler is up to date"
+              : "Checking for updates";
+
+  return (
+    <div className="updateGate" role="dialog" aria-modal="true">
+      <section className="updatePanel">
+        <div className="updateLogo">
+          <span className="brandMark">PF</span>
+          <div>
+            <strong>PDF Filler</strong>
+            <span>Installed v{appVersion}</span>
+          </div>
+        </div>
+        <h1>{title}</h1>
+        <p>{state.status}</p>
+        {(state.phase === "downloading" || state.phase === "downloaded") && (
+          <div className="updateProgress" aria-label="Download progress">
+            <span style={{ width: `${state.phase === "downloaded" ? 100 : state.percent}%` }} />
+          </div>
+        )}
+        <div className="updateActions">
+          {canUpdate && <button className="primaryAction" onClick={onUpdate}>Update now</button>}
+          {canContinue && <button onClick={onContinue}>{state.phase === "available" ? "Later" : "Continue"}</button>}
+          {busy && <span className="updateSpinner" />}
+        </div>
+      </section>
     </div>
   );
 }

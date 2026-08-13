@@ -6,6 +6,13 @@ type DesktopPdfPayload = {
   bytes: ArrayBuffer | Uint8Array | number[];
 };
 
+type DesktopUpdateState = {
+  phase: "idle" | "checking" | "available" | "downloading" | "downloaded" | "not-available" | "error" | "disabled" | "development";
+  status: string;
+  version: string;
+  percent: number;
+};
+
 interface Window {
   pdfFillerDesktop?: {
     getInitialPdf: () => Promise<DesktopPdfPayload | null>;
@@ -16,10 +23,12 @@ interface Window {
     openDefaultAppSettings: () => Promise<void>;
     savePdfFile: (payload: { defaultName: string; bytes: number[] }) => Promise<{ canceled: boolean; filePath?: string }>;
     print: () => Promise<boolean>;
-    getUpdateSettings: () => Promise<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string; status: string }>;
+    getUpdateSettings: () => Promise<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string; status: string; updateState: DesktopUpdateState }>;
     setUpdateSettings: (settings: Partial<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string }>) => Promise<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string }>;
     checkForUpdates: () => Promise<{ ok: boolean; reason?: string }>;
+    downloadUpdate: () => Promise<{ ok: boolean; reason?: string }>;
     onUpdaterStatus: (callback: (status: string) => void) => () => void;
+    onUpdaterState: (callback: (state: DesktopUpdateState) => void) => () => void;
     onPdfOpenedFromSystem: (callback: (filePath: string) => void) => () => void;
   };
 }
