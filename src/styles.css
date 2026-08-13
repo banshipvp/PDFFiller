@@ -46,8 +46,9 @@ button:disabled {
 
 .globalNav {
   align-items: stretch;
-  background: #ffffff;
-  border-bottom: 1px solid #d6dee8;
+  background: #fbfdff;
+  border-bottom: 1px solid #d5deeb;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.8), 0 10px 24px rgba(15, 23, 42, 0.05);
   display: flex;
   min-width: 0;
   z-index: 10;
@@ -55,11 +56,12 @@ button:disabled {
 
 .globalBrand {
   align-items: center;
+  background: #ffffff;
   border-right: 1px solid #d6dee8;
   display: flex;
   gap: 10px;
-  min-width: 190px;
-  padding: 0 16px;
+  min-width: 198px;
+  padding: 0 18px;
 }
 
 .brandMark.compact {
@@ -70,7 +72,9 @@ button:disabled {
 .menuBar {
   align-items: stretch;
   display: flex;
+  gap: 4px;
   min-width: 0;
+  padding: 0 12px;
 }
 
 .menuWrap {
@@ -79,44 +83,49 @@ button:disabled {
 
 .menuButton {
   align-items: center;
-  background: #ffffff;
+  background: transparent;
   border-bottom: 3px solid transparent;
-  color: #111827;
+  color: #1f2937;
   display: flex;
   gap: 6px;
   height: 100%;
-  padding: 0 18px;
+  padding: 0 16px;
+  position: relative;
 }
 
 .menuButton.active,
 .menuButton:hover {
-  border-bottom-color: #111827;
+  background: #f4f7fb;
+  border-bottom-color: #1f2937;
+  color: #0f172a;
 }
 
 .menuDropdown {
   background: #ffffff;
-  border: 1px solid #d6dee8;
-  border-radius: 0 0 8px 8px;
-  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.16);
+  border: 1px solid #ccd6e3;
+  border-radius: 10px;
+  box-shadow: 0 24px 55px rgba(15, 23, 42, 0.18);
   display: grid;
   left: 0;
-  min-width: 220px;
-  padding: 8px;
+  min-width: 238px;
+  padding: 9px;
   position: absolute;
-  top: 58px;
+  top: 52px;
   z-index: 30;
 }
 
 .menuDropdown button {
   background: transparent;
-  border-radius: 6px;
-  color: #1f2937;
-  padding: 10px 12px;
+  border-radius: 7px;
+  color: #243044;
+  font-size: 14px;
+  padding: 11px 12px;
   text-align: left;
 }
 
 .menuDropdown button:hover {
-  background: #eef4fb;
+  background: #eef4ff;
+  color: #1d4ed8;
 }
 
 .app {
@@ -255,6 +264,7 @@ button:disabled {
   background: #2563eb;
   border-color: #2563eb;
   color: #ffffff;
+  font-weight: 800;
 }
 
 .wideButton.danger {
@@ -799,7 +809,8 @@ button:disabled {
 
 .modalBackdrop {
   align-items: center;
-  background: rgba(15, 23, 42, 0.56);
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(4px);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -810,25 +821,29 @@ button:disabled {
 
 .mergeModal {
   background: #ffffff;
-  border-radius: 8px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 10px;
+  box-shadow: 0 34px 90px rgba(15, 23, 42, 0.32);
   max-width: 980px;
   min-height: 520px;
-  padding: 18px;
+  padding: 20px;
   width: min(94vw, 980px);
 }
 
 .mergeModal header {
   align-items: flex-start;
-  border-bottom: 1px solid #d6dee8;
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+  border-bottom: 1px solid #d8e1ec;
   display: flex;
   justify-content: space-between;
-  margin: -18px -18px 16px;
-  padding: 16px 18px;
+  margin: -20px -20px 18px;
+  padding: 18px 20px;
 }
 
 .mergeModal h2 {
-  font-size: 18px;
+  color: #0f172a;
+  font-size: 19px;
+  font-weight: 900;
   margin: 0 0 4px;
 }
 
@@ -842,13 +857,34 @@ button:disabled {
   background: #ffffff;
   border: 1px solid #d1dbe7;
   border-radius: 7px;
+  color: #172033;
   min-height: 36px;
   padding: 7px 12px;
 }
 
+.modalActions .primaryAction {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+  min-width: 92px;
+}
+
+.modalActions .primaryAction:not(:disabled):hover {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+}
+
+.modalActions .primaryAction:disabled {
+  background: #e8eef6;
+  border-color: #d6dee8;
+  color: #64748b;
+  opacity: 1;
+}
+
 .mergeList {
-  border: 1px solid #d6dee8;
-  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #d7e0eb;
+  border-radius: 9px;
   display: grid;
   margin-top: 16px;
   overflow: hidden;
@@ -864,11 +900,16 @@ button:disabled {
   padding: 12px 14px;
 }
 
+.mergeRow:hover {
+  background: #f8fbff;
+}
+
 .mergeRow:last-child {
   border-bottom: 0;
 }
 
 .mergeRow strong {
+  color: #172033;
   display: block;
   font-size: 14px;
   overflow: hidden;
@@ -882,10 +923,32 @@ button:disabled {
   font-size: 12px;
 }
 
+.mergeRow button {
+  background: #f8fafc;
+  border: 1px solid #d4deea;
+  border-radius: 7px;
+  color: #243044;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.mergeRow button:not(:disabled):hover {
+  background: #eef4ff;
+  border-color: #b9c9e8;
+  color: #1d4ed8;
+}
+
+.mergeList > .muted {
+  padding: 28px;
+  text-align: center;
+}
+
 .dragDots {
   color: #94a3b8;
   font-weight: 900;
-  letter-spacing: -3px;
+  letter-spacing: -2px;
 }
 
 .iconDanger {

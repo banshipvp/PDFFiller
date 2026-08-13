@@ -2222,7 +2222,7 @@ function MergeModal({ onClose, onMerge }: { onClose: () => void; onMerge: (files
         <div className="mergeList">
           {files.map((file, index) => (
             <div className="mergeRow" key={`${file.name}-${file.lastModified}`}>
-              <span className="dragDots">⋮⋮</span>
+              <span className="dragDots">::::</span>
               <FileText size={28} />
               <div>
                 <strong>{file.name}</strong>
