@@ -191,6 +191,8 @@ ipcMain.handle("desktop:get-initial-pdf", async () => {
   return readPdfPayload(filePath);
 });
 
+ipcMain.handle("desktop:get-app-version", () => app.getVersion());
+
 ipcMain.handle("desktop:read-pdf-file", async (_event, filePath) => readPdfPayload(filePath));
 
 ipcMain.handle("desktop:get-startup-enabled", () => {

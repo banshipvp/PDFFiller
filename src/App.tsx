@@ -35,7 +35,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { PDFCheckBox, PDFDocument, PDFTextField, rgb, StandardFonts } from "pdf-lib";
+import { PDFCheckBox, PDFDocument, PDFTextField, degrees, rgb, StandardFonts } from "pdf-lib";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GlobalWorkerOptions, OPS, Util, getDocument } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -78,6 +78,9 @@ type TextAnnotation = BaseAnnotation & {
   fontSize: number;
   bold: boolean;
   background?: string;
+  opacity?: number;
+  rotation?: number;
+  repeat?: boolean;
 };
 
 type ImageAnnotation = BaseAnnotation & {
@@ -189,6 +192,8 @@ const palette = {
 };
 
 const signatureFonts: SignatureFont[] = [
+  { id: "cursive", label: "Cursive", family: "Edwardian Script ITC, Kunstler Script, Brush Script MT, cursive" },
+  { id: "flourish", label: "Flourish", family: "Kunstler Script, Edwardian Script ITC, Lucida Handwriting, cursive" },
   { id: "script", label: "Classic Script", family: "Segoe Script, Brush Script MT, cursive" },
   { id: "formal", label: "Formal", family: "Lucida Handwriting, Segoe Script, cursive" },
   { id: "clean", label: "Clean", family: "Segoe UI, Arial, sans-serif" },
@@ -460,6 +465,7 @@ function App() {
   const [githubRepo, setGithubRepo] = useState("");
   const [updateFeedUrl, setUpdateFeedUrl] = useState("");
   const [updateStatus, setUpdateStatus] = useState("Updater ready");
+  const [appVersion, setAppVersion] = useState("development");
   const [status, setStatus] = useState("Ready");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -596,6 +602,7 @@ function App() {
 
   useEffect(() => {
     if (!window.pdfFillerDesktop) return;
+    void window.pdfFillerDesktop.getAppVersion().then(setAppVersion);
     void window.pdfFillerDesktop.getStartupEnabled().then(setStartupEnabled);
     void window.pdfFillerDesktop.getUpdateSettings().then((settings) => {
       setUpdatesEnabled(settings.enabled);
@@ -664,7 +671,30 @@ function App() {
       fontSize: preset?.fontSize ?? 16,
       bold: preset?.bold ?? false,
       background: preset?.background,
+      opacity: preset?.opacity,
+      rotation: preset?.rotation,
+      repeat: preset?.repeat,
     });
+  };
+
+  const addWatermark = (page = activePage) => {
+    if (!pdfDoc || !pageSizes.length) {
+      setStatus("Open a PDF before adding a watermark.");
+      return;
+    }
+    createTextAnnotation(page, { x: 0.18, y: 0.42 }, {
+      type: "watermark",
+      text: "WATERMARK",
+      w: 0.64,
+      h: 0.14,
+      fontSize: 54,
+      color: "#64748b",
+      bold: true,
+      opacity: 0.22,
+      rotation: -35,
+      repeat: false,
+    });
+    setStatus("Watermark added. Edit text, opacity, angle, and repeat in the right panel.");
   };
 
   const handlePagePointerDown = (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => {
@@ -720,6 +750,12 @@ function App() {
       const zone = textZones
         .filter((item) => item.page === page)
         .find((item) => point.x >= item.x && point.x <= item.x + item.w && point.y >= item.y && point.y <= item.y + item.h);
+      if (!zone) {
+        setSelectedId(null);
+        setEditingId(null);
+        setStatus("Edit Text only edits detected PDF text. Use Add text for new text boxes.");
+        return;
+      }
       createTextAnnotation(page, { x: zone?.x ?? point.x, y: zone?.y ?? point.y }, {
         type: "detectedText",
         text: zone?.text ?? "",
@@ -747,16 +783,21 @@ function App() {
       return;
     }
 
-    if (["date", "comment", "note", "watermark", "pageNumber"].includes(tool)) {
+    if (tool === "watermark") {
+      addWatermark(page);
+      return;
+    }
+
+    if (["date", "comment", "note", "pageNumber"].includes(tool)) {
       const pageText = tool === "pageNumber" ? `${page}` : "";
       const dateText = new Date().toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
       createTextAnnotation(page, point, {
         type: tool as TextAnnotation["type"],
         text: tool === "date" ? dateText : pageText,
-        w: tool === "watermark" ? 0.45 : 0.24,
+        w: 0.24,
         h: tool === "note" || tool === "comment" ? 0.1 : 0.045,
-        fontSize: tool === "watermark" ? 34 : 14,
-        color: tool === "watermark" ? "#64748b" : textColor,
+        fontSize: 14,
+        color: textColor,
         background: tool === "note" ? "#fef3c7" : undefined,
       });
       return;
@@ -1048,7 +1089,28 @@ function App() {
           });
         }
         const color = hexToRgb(annotation.color);
-        const opacity = annotation.type === "watermark" ? 0.25 : 1;
+        const opacity = annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1;
+        if (annotation.type === "watermark" && annotation.repeat) {
+          const text = annotation.text || "WATERMARK";
+          const size = annotation.fontSize;
+          const textWidth = font.widthOfTextAtSize(text, size);
+          const gapX = Math.max(textWidth + 140, 240);
+          const gapY = Math.max(size * 4, 130);
+          for (let y = -height * 0.2; y < height * 1.25; y += gapY) {
+            for (let x = -width * 0.1; x < width * 1.15; x += gapX) {
+              page.drawText(text, {
+                x,
+                y,
+                size,
+                font: annotation.bold ? boldFont : font,
+                color: rgb(color.r, color.g, color.b),
+                opacity,
+                rotate: degrees(annotation.rotation ?? -35),
+              });
+            }
+          }
+          continue;
+        }
         page.drawText(annotation.text || " ", {
           x: annotation.x * width,
           y: height - annotation.y * height - annotation.fontSize,
@@ -1056,6 +1118,7 @@ function App() {
           font: annotation.bold ? boldFont : font,
           color: rgb(color.r, color.g, color.b),
           opacity,
+          rotate: annotation.type === "watermark" ? degrees(annotation.rotation ?? -35) : undefined,
           maxWidth: annotation.w * width,
           lineHeight: annotation.fontSize * 1.18,
         });
@@ -1248,7 +1311,7 @@ function App() {
       imageUploadRef.current?.click();
     }
     if (item === "Erase") setTool("eraser");
-    if (item === "Watermark") setTool("watermark");
+    if (item === "Watermark") addWatermark();
     if (item === "Sign Document") setTool("signature");
     if (item === "Initials") setTool("initials");
   };
@@ -1330,6 +1393,10 @@ function App() {
                 className={tool === id ? "tool active" : "tool"}
                 key={id}
                 onClick={() => {
+                  if (id === "watermark") {
+                    addWatermark();
+                    return;
+                  }
                   setTool(id);
                   if (id === "image") imageUploadRef.current?.click();
                 }}
@@ -1556,6 +1623,10 @@ function App() {
         {isDesktop && (
           <section>
             <h2>Desktop</h2>
+            <div className="versionBadge">
+              <span>Installed version</span>
+              <strong>{appVersion}</strong>
+            </div>
             <label className="checkRow">
               <input
                 type="checkbox"
@@ -1850,7 +1921,15 @@ function AnnotationView({
     );
   }
 
-  const style = { left: `${annotation.x * 100}%`, top: `${annotation.y * 100}%`, width: `${annotation.w * 100}%`, height: `${annotation.h * 100}%` };
+  const style = {
+    left: `${annotation.x * 100}%`,
+    top: `${annotation.y * 100}%`,
+    width: `${annotation.w * 100}%`,
+    height: `${annotation.h * 100}%`,
+    transform: annotation.type === "watermark" && !annotation.repeat ? `rotate(${annotation.rotation ?? -35}deg)` : undefined,
+    transformOrigin: annotation.type === "watermark" ? "center" : undefined,
+  };
+  const watermarkCopies = Array.from({ length: 24 });
 
   return (
     <div
@@ -1862,7 +1941,24 @@ function AnnotationView({
       }}
       onPointerDown={(event) => onDrag(event, annotation, pageSize, "move")}
     >
-      {isTextAnnotation(annotation) && (
+      {isTextAnnotation(annotation) && annotation.type === "watermark" && annotation.repeat && (
+        <div
+          className="watermarkRepeat"
+          style={{
+            color: annotation.color,
+            fontSize: annotation.fontSize * zoom,
+            fontWeight: annotation.bold ? 700 : 400,
+            opacity: annotation.opacity ?? 0.22,
+          }}
+        >
+          {watermarkCopies.map((_, index) => (
+            <span key={index} style={{ transform: `rotate(${annotation.rotation ?? -35}deg)` }}>
+              {annotation.text || "WATERMARK"}
+            </span>
+          ))}
+        </div>
+      )}
+      {isTextAnnotation(annotation) && !(annotation.type === "watermark" && annotation.repeat) && (
         editing ? (
           <textarea
             ref={inputRef as React.RefObject<HTMLTextAreaElement>}
@@ -1871,10 +1967,10 @@ function AnnotationView({
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onUpdate(annotation.id, { text: event.target.value })}
             onBlur={() => undefined}
-            style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.background ?? "transparent" }}
+            style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.background ?? "transparent", opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}
           />
         ) : (
-          <div className="textAnnotation" style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.background }}>
+          <div className="textAnnotation" style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.background, opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}>
             {annotation.text || "Type here"}
           </div>
         )
@@ -1976,6 +2072,22 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
           <input type="number" min="7" max="96" value={annotation.fontSize} onChange={(event) => update({ fontSize: Number(event.target.value) })} />
           <label className="checkRow"><input type="checkbox" checked={annotation.bold} onChange={(event) => update({ bold: event.target.checked })} /> Bold</label>
           <ColorRow value={annotation.color} onChange={(color) => update({ color })} />
+          {annotation.type === "watermark" && (
+            <>
+              <label>Opacity</label>
+              <input type="range" min="0.05" max="0.75" step="0.01" value={annotation.opacity ?? 0.22} onChange={(event) => update({ opacity: Number(event.target.value) })} />
+              <label>Angle</label>
+              <input type="number" min="-90" max="90" value={annotation.rotation ?? -35} onChange={(event) => update({ rotation: Number(event.target.value) })} />
+              <label className="checkRow">
+                <input
+                  type="checkbox"
+                  checked={annotation.repeat ?? false}
+                  onChange={(event) => update(event.target.checked ? { repeat: true, x: 0, y: 0, w: 1, h: 1 } : { repeat: false, x: 0.18, y: 0.42, w: 0.64, h: 0.14 })}
+                />
+                Repeat across page
+              </label>
+            </>
+          )}
         </>
       )}
       {annotation.type === "field" && (

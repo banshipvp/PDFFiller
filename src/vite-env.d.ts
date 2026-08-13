@@ -9,6 +9,7 @@ type DesktopPdfPayload = {
 interface Window {
   pdfFillerDesktop?: {
     getInitialPdf: () => Promise<DesktopPdfPayload | null>;
+    getAppVersion: () => Promise<string>;
     readPdfFile: (filePath: string) => Promise<DesktopPdfPayload>;
     getStartupEnabled: () => Promise<boolean>;
     setStartupEnabled: (enabled: boolean) => Promise<boolean>;

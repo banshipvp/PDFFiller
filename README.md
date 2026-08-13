@@ -35,7 +35,7 @@ PDFs that contain real selectable text can have text detected and converted into
 
 The packaged Windows app is in `desktop-release`.
 
-- Installer: `desktop-release/PDF Filler Setup 1.0.5.exe`
+- Installer: `desktop-release/PDF Filler Setup 1.0.6.exe`
 - Unpacked app: `desktop-release/win-unpacked/PDF Filler.exe`
 
 Use the installer once if you want desktop/start-menu shortcuts, PDF file association registration, and automatic in-place updates. After that, open `PDF Filler` from the desktop shortcut, Start menu, or by double-clicking a PDF.
@@ -89,7 +89,7 @@ You can still use a normal website folder by choosing `Website folder` and uploa
 
 ## Default PDF App
 
-Install PDF Filler with `desktop-release/PDF Filler Setup 1.0.5.exe`, then set it as your PDF default in Windows:
+Install PDF Filler with `desktop-release/PDF Filler Setup 1.0.6.exe`, then set it as your PDF default in Windows:
 
 1. Open `Settings`.
 2. Go to `Apps`.

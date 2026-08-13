@@ -483,6 +483,39 @@ button:disabled {
   width: 100%;
 }
 
+.annotation.watermark {
+  align-items: center;
+  justify-content: center;
+}
+
+.annotation.watermark .textAnnotation {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.watermarkRepeat {
+  align-content: space-around;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  height: 100%;
+  justify-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  row-gap: 44px;
+  text-align: center;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.watermarkRepeat span {
+  display: block;
+  min-width: 220px;
+  transform-origin: center;
+  white-space: nowrap;
+}
+
 .liveTextInput {
   border: 1px solid #2563eb;
   border-radius: 2px;
@@ -693,6 +726,28 @@ button:disabled {
 
 .selectedTools textarea {
   min-height: 82px;
+}
+
+.versionBadge {
+  align-items: center;
+  background: #eef4ff;
+  border: 1px solid #c7d7f4;
+  border-radius: 7px;
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 12px;
+  padding: 9px 10px;
+}
+
+.versionBadge span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.versionBadge strong {
+  color: #1d4ed8;
+  font-size: 13px;
 }
 
 .pill {

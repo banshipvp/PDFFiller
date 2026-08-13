@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("pdfFillerDesktop", {
   getInitialPdf: () => ipcRenderer.invoke("desktop:get-initial-pdf"),
+  getAppVersion: () => ipcRenderer.invoke("desktop:get-app-version"),
   readPdfFile: (filePath) => ipcRenderer.invoke("desktop:read-pdf-file", filePath),
   getStartupEnabled: () => ipcRenderer.invoke("desktop:get-startup-enabled"),
   setStartupEnabled: (enabled) => ipcRenderer.invoke("desktop:set-startup-enabled", enabled),
