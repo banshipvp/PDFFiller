@@ -176,6 +176,7 @@ type TextZone = BaseAnnotation & {
 type FormZone = BaseAnnotation & {
   name: string;
   fieldType: string;
+  value?: string;
 };
 
 type LineZone = BaseAnnotation & {
@@ -537,6 +538,7 @@ function App() {
             ...box,
             name: candidate.fieldName || `Field ${extractedForms.length + 1}`,
             fieldType: candidate.fieldType || "Tx",
+            value: typeof candidate.fieldValue === "string" ? candidate.fieldValue : "",
           });
           continue;
         }
@@ -627,7 +629,12 @@ function App() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Delete" && selectedId && editingId !== selectedId) removeAnnotation(selectedId);
+      const target = event.target as HTMLElement | null;
+      const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if ((event.key === "Delete" || event.key === "Backspace") && selectedId && !typing) {
+        event.preventDefault();
+        removeAnnotation(selectedId);
+      }
       if (event.key === "Escape") {
         setEditingId(null);
         setTool("select");
@@ -702,6 +709,9 @@ function App() {
     const point = pagePoint(event, event.currentTarget);
     const page = pageIndex + 1;
     setActivePage(page);
+    const annotationAtPoint = annotations
+      .filter((annotation): annotation is Annotation & BaseAnnotation => annotation.type !== "draw" && annotation.page === page)
+      .find((annotation) => point.x >= annotation.x && point.x <= annotation.x + annotation.w && point.y >= annotation.y && point.y <= annotation.y + annotation.h);
     const formZone = formZones.find(
       (zone) => zone.page === page && point.x >= zone.x && point.x <= zone.x + zone.w && point.y >= zone.y && point.y <= zone.y + zone.h,
     );
@@ -717,6 +727,11 @@ function App() {
     }
 
     if (tool === "select") {
+      if (annotationAtPoint) {
+        setSelectedId(annotationAtPoint.id);
+        setEditingId(isTextAnnotation(annotationAtPoint) || annotationAtPoint.type === "field" ? annotationAtPoint.id : null);
+        return;
+      }
       if (formZone) {
         addAnnotation({
           id: uid("field"),
@@ -727,7 +742,7 @@ function App() {
           w: formZone.w,
           h: formZone.h,
           name: formZone.name,
-          value: "",
+          value: formZone.value ?? "",
           fontSize: 12,
         });
         return;
@@ -754,6 +769,18 @@ function App() {
         setSelectedId(null);
         setEditingId(null);
         setStatus("Edit Text only edits detected PDF text. Use Add text for new text boxes.");
+        return;
+      }
+      const existing = annotations.find((annotation) =>
+        annotation.page === page &&
+        annotation.type === "detectedText" &&
+        Math.abs(annotation.x - zone.x) < 0.006 &&
+        Math.abs(annotation.y - zone.y) < 0.006 &&
+        Math.abs(annotation.w - zone.w) < 0.02,
+      );
+      if (existing) {
+        setSelectedId(existing.id);
+        setEditingId(existing.id);
         return;
       }
       createTextAnnotation(page, { x: zone?.x ?? point.x, y: zone?.y ?? point.y }, {
@@ -1536,6 +1563,7 @@ function App() {
                 formZones={formZones.filter((zone) => zone.page === index + 1)}
                 lineZones={lineZones.filter((zone) => zone.page === index + 1)}
                 showTextZones={tool === "editText"}
+                showFillZones={tool === "text" || tool === "field"}
                 selectedId={selectedId}
                 editingId={editingId}
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
@@ -1755,6 +1783,7 @@ function PdfPage({
   formZones,
   lineZones,
   showTextZones,
+  showFillZones,
   selectedId,
   editingId,
   draftBox,
@@ -1779,6 +1808,7 @@ function PdfPage({
   formZones: FormZone[];
   lineZones: LineZone[];
   showTextZones: boolean;
+  showFillZones: boolean;
   selectedId: string | null;
   editingId: string | null;
   draftBox: DraftBox | null;
@@ -1833,8 +1863,8 @@ function PdfPage({
       >
         <canvas ref={canvasRef} style={{ width: displayWidth, height: displayHeight }} />
         <div className="annotationLayer">
-          {formZones.map((zone) => <div key={zone.id} className="formZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title={zone.name} />)}
-          {lineZones.map((zone) => <div key={zone.id} className="lineZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title="Click to fill" />)}
+          {showFillZones && formZones.map((zone) => <div key={zone.id} className="formZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title={zone.name} />)}
+          {showFillZones && lineZones.map((zone) => <div key={zone.id} className="lineZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title="Click to fill" />)}
           {showTextZones && textZones.map((zone) => <div key={zone.id} className="textZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} />)}
           {annotations.map((annotation) => (
             <AnnotationView
