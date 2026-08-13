@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require("electron");
 contextBridge.exposeInMainWorld("pdfFillerDesktop", {
   getInitialPdf: () => ipcRenderer.invoke("desktop:get-initial-pdf"),
   getAppVersion: () => ipcRenderer.invoke("desktop:get-app-version"),
+  setDirty: (dirty) => ipcRenderer.invoke("desktop:set-dirty", dirty),
+  closeAfterSave: () => ipcRenderer.invoke("desktop:close-after-save"),
   readPdfFile: (filePath) => ipcRenderer.invoke("desktop:read-pdf-file", filePath),
   getStartupEnabled: () => ipcRenderer.invoke("desktop:get-startup-enabled"),
   setStartupEnabled: (enabled) => ipcRenderer.invoke("desktop:set-startup-enabled", enabled),
@@ -22,6 +24,11 @@ contextBridge.exposeInMainWorld("pdfFillerDesktop", {
     const listener = (_event, state) => callback(state);
     ipcRenderer.on("updater-state", listener);
     return () => ipcRenderer.removeListener("updater-state", listener);
+  },
+  onSaveBeforeClose: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("save-before-close", listener);
+    return () => ipcRenderer.removeListener("save-before-close", listener);
   },
   onPdfOpenedFromSystem: (callback) => {
     const listener = (_event, filePath) => callback(filePath);

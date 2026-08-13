@@ -7,6 +7,8 @@ const isDev = process.env.PDF_FILLER_DEV === "1";
 let mainWindow = null;
 let pendingPdfPath = null;
 let currentUpdateStatus = "Updater ready";
+let hasUnsavedChanges = false;
+let closeAfterSave = false;
 let currentUpdateState = {
   phase: "idle",
   status: "Updater ready",
@@ -103,6 +105,29 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  mainWindow.on("close", async (event) => {
+    if (!hasUnsavedChanges || closeAfterSave) return;
+    event.preventDefault();
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "warning",
+      buttons: ["Save", "Discard", "Cancel"],
+      defaultId: 0,
+      cancelId: 2,
+      title: "Unsaved changes",
+      message: "You have unsaved changes in this PDF.",
+      detail: "Save before closing, discard your changes, or cancel and keep editing.",
+    });
+    if (result.response === 0) {
+      mainWindow.webContents.send("save-before-close");
+      return;
+    }
+    if (result.response === 1) {
+      hasUnsavedChanges = false;
+      closeAfterSave = true;
+      mainWindow.close();
+    }
+  });
 }
 
 async function checkForUpdates(manual = false) {
@@ -198,6 +223,17 @@ ipcMain.handle("desktop:get-initial-pdf", async () => {
 });
 
 ipcMain.handle("desktop:get-app-version", () => app.getVersion());
+
+ipcMain.handle("desktop:set-dirty", (_event, dirty) => {
+  hasUnsavedChanges = Boolean(dirty);
+  return hasUnsavedChanges;
+});
+
+ipcMain.handle("desktop:close-after-save", () => {
+  hasUnsavedChanges = false;
+  closeAfterSave = true;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
+});
 
 ipcMain.handle("desktop:read-pdf-file", async (_event, filePath) => readPdfPayload(filePath));
 

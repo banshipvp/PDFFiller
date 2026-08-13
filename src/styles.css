@@ -504,6 +504,7 @@ button:disabled {
 .textAnnotation {
   align-items: flex-start;
   display: flex;
+  height: 100%;
   line-height: 1.15;
   min-width: 0;
   overflow: hidden;
@@ -546,10 +547,12 @@ button:disabled {
 }
 
 .liveTextInput {
+  background: #ffffff;
   border: 1px solid #2563eb;
   border-radius: 2px;
   height: 100%;
   line-height: 1.15;
+  min-height: 0;
   outline: none;
   padding: 1px 2px;
   resize: none;
@@ -558,7 +561,7 @@ button:disabled {
 
 .fieldAnnotation {
   align-items: center;
-  background: rgba(255, 255, 255, 0.88);
+  background: #ffffff;
   border: 1px dashed #64748b;
   color: #334155;
   display: flex;
@@ -628,6 +631,24 @@ button:disabled {
 .tableOverlay span {
   border-style: solid;
   border-width: 0 1px 1px 0;
+  color: #111827;
+  font-size: 12px;
+  line-height: 1.15;
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px;
+  white-space: pre-wrap;
+}
+
+.tableOverlay input {
+  background: transparent;
+  border: 0;
+  color: #111827;
+  font-size: 12px;
+  height: 100%;
+  outline: none;
+  padding: 0;
+  width: 100%;
 }
 
 .deleteBubble {
@@ -671,6 +692,23 @@ button:disabled {
 }
 
 .draftBox.circle {
+  border-radius: 999px;
+}
+
+.placementPreview {
+  align-items: center;
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px dashed #2563eb;
+  color: #111827;
+  display: flex;
+  font-size: 18px;
+  font-weight: 900;
+  justify-content: center;
+  pointer-events: none;
+  position: absolute;
+}
+
+.placementPreview.radio {
   border-radius: 999px;
 }
 

@@ -17,6 +17,8 @@ interface Window {
   pdfFillerDesktop?: {
     getInitialPdf: () => Promise<DesktopPdfPayload | null>;
     getAppVersion: () => Promise<string>;
+    setDirty: (dirty: boolean) => Promise<boolean>;
+    closeAfterSave: () => Promise<void>;
     readPdfFile: (filePath: string) => Promise<DesktopPdfPayload>;
     getStartupEnabled: () => Promise<boolean>;
     setStartupEnabled: (enabled: boolean) => Promise<boolean>;
@@ -29,6 +31,7 @@ interface Window {
     downloadUpdate: () => Promise<{ ok: boolean; reason?: string }>;
     onUpdaterStatus: (callback: (status: string) => void) => () => void;
     onUpdaterState: (callback: (state: DesktopUpdateState) => void) => () => void;
+    onSaveBeforeClose: (callback: () => void) => () => void;
     onPdfOpenedFromSystem: (callback: (filePath: string) => void) => () => void;
   };
 }

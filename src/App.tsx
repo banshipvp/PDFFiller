@@ -113,6 +113,7 @@ type RectAnnotation = BaseAnnotation & {
 type ChoiceAnnotation = BaseAnnotation & {
   type: "checkbox" | "radio" | "checkmark";
   checked: boolean;
+  mark?: "check" | "x";
 };
 
 type ArrowAnnotation = BaseAnnotation & {
@@ -126,6 +127,7 @@ type TableAnnotation = BaseAnnotation & {
   rows: number;
   cols: number;
   color: string;
+  cells?: string[];
 };
 
 type FieldAnnotation = BaseAnnotation & {
@@ -193,10 +195,10 @@ const palette = {
 };
 
 const signatureFonts: SignatureFont[] = [
-  { id: "cursive", label: "Cursive", family: "Edwardian Script ITC, Kunstler Script, Brush Script MT, cursive" },
-  { id: "flourish", label: "Flourish", family: "Kunstler Script, Edwardian Script ITC, Lucida Handwriting, cursive" },
-  { id: "script", label: "Classic Script", family: "Segoe Script, Brush Script MT, cursive" },
-  { id: "formal", label: "Formal", family: "Lucida Handwriting, Segoe Script, cursive" },
+  { id: "cursive", label: "Connected", family: "Segoe Script, Lucida Handwriting, cursive" },
+  { id: "signature", label: "Signature", family: "Segoe Print, Segoe Script, cursive" },
+  { id: "script", label: "Soft Script", family: "Brush Script MT, Segoe Script, cursive" },
+  { id: "formal", label: "Simple Cursive", family: "Lucida Handwriting, Segoe Print, cursive" },
   { id: "clean", label: "Clean", family: "Segoe UI, Arial, sans-serif" },
   { id: "serif", label: "Serif", family: "Georgia, Times New Roman, serif" },
   { id: "marker", label: "Marker", family: "Comic Sans MS, Segoe Print, cursive" },
@@ -254,9 +256,9 @@ const featureGroups = [
 
 const topMenus = [
   { title: "Home", items: ["Open PDF", "Save", "Print"] },
-  { title: "Tools", items: ["Merge PDFs", "Split PDF", "Compress PDF", "Organize Pages"] },
+  { title: "Tools", items: ["Merge PDFs", "Split PDF", "Extract PDF pages", "Delete PDF pages", "Rotate PDF", "Add page numbers", "Compress PDF", "Organize Pages"] },
   { title: "Convert", items: ["PDF to JPEG", "JPEG to PDF", "Word to PDF", "PDF to Word"] },
-  { title: "Edit", items: ["Edit PDF", "Add Text", "Add Images", "Erase", "Watermark"] },
+  { title: "Edit", items: ["Edit PDF", "Add Text", "Add Images", "Erase", "Watermark", "Number PDF pages"] },
   { title: "Sign & Protect", items: ["Sign Document", "Initials", "Protect PDF", "Redact PDF"] },
   { title: "Generative AI", items: ["Summarize PDF", "Translate PDF", "Ask PDF"] },
 ];
@@ -414,7 +416,7 @@ function saveAssets(assets: SignatureAsset[]) {
   localStorage.setItem("pdf-filler-assets", JSON.stringify(assets));
 }
 
-function payloadToArrayBuffer(bytes: DesktopPdfPayload["bytes"]) {
+function payloadToArrayBuffer(bytes: DesktopPdfPayload["bytes"] | Uint8Array) {
   if (bytes instanceof ArrayBuffer) return bytes;
   if (ArrayBuffer.isView(bytes)) {
     const output = new ArrayBuffer(bytes.byteLength);
@@ -477,7 +479,14 @@ function App() {
   const [status, setStatus] = useState("Ready");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
   const isDesktop = Boolean(window.pdfFillerDesktop);
+  const historyRef = useRef<Annotation[][]>([]);
+  const redoRef = useRef<Annotation[][]>([]);
+  const lastAnnotationsRef = useRef<Annotation[]>([]);
+  const suppressHistoryRef = useRef(false);
+  const loadedRef = useRef(false);
   const pageRefs = useRef<Record<number, HTMLElement | null>>({});
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<{
@@ -582,9 +591,16 @@ function App() {
     setTextZones(extractedText);
     setFormZones(extractedForms);
     setLineZones(extractedLines);
+    suppressHistoryRef.current = true;
+    historyRef.current = [];
+    redoRef.current = [];
+    lastAnnotationsRef.current = importedAnnotations;
+    loadedRef.current = true;
     setAnnotations(importedAnnotations);
     setSelectedId(null);
     setEditingId(null);
+    setIsDirty(false);
+    void window.pdfFillerDesktop?.setDirty(false);
     setActivePage(1);
     setStatus(
       `${doc.numPages} page${doc.numPages === 1 ? "" : "s"}, ${extractedText.length} text runs, ${extractedForms.length} form fields, ${extractedLines.length} fill lines`,
@@ -633,10 +649,14 @@ function App() {
       setUpdateState(state);
       setShowUpdateGate(true);
     });
+    const removeSaveBeforeCloseListener = window.pdfFillerDesktop.onSaveBeforeClose(() => {
+      void savePdf().then(() => window.pdfFillerDesktop?.closeAfterSave());
+    });
     return () => {
       removeOpenListener();
       removeUpdateListener();
       removeUpdateStateListener();
+      removeSaveBeforeCloseListener();
     };
   }, []);
 
@@ -648,9 +668,56 @@ function App() {
   }, [showUpdateGate, updateState.phase]);
 
   useEffect(() => {
+    if (!loadedRef.current) {
+      lastAnnotationsRef.current = annotations;
+      return;
+    }
+    if (suppressHistoryRef.current) {
+      suppressHistoryRef.current = false;
+      lastAnnotationsRef.current = annotations;
+      return;
+    }
+    historyRef.current = [...historyRef.current.slice(-39), lastAnnotationsRef.current];
+    redoRef.current = [];
+    lastAnnotationsRef.current = annotations;
+    setIsDirty(true);
+    void window.pdfFillerDesktop?.setDirty(true);
+  }, [annotations]);
+
+  const undo = useCallback(() => {
+    const previous = historyRef.current.pop();
+    if (!previous) return;
+    redoRef.current = [...redoRef.current, annotations];
+    suppressHistoryRef.current = true;
+    setAnnotations(previous);
+    setSelectedId(null);
+    setEditingId(null);
+  }, [annotations]);
+
+  const redo = useCallback(() => {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    historyRef.current = [...historyRef.current, annotations];
+    suppressHistoryRef.current = true;
+    setAnnotations(next);
+    setSelectedId(null);
+    setEditingId(null);
+  }, [annotations]);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undo();
+        return;
+      }
+      if ((event.ctrlKey && event.key.toLowerCase() === "y") || (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "z")) {
+        event.preventDefault();
+        redo();
+        return;
+      }
       if ((event.key === "Delete" || event.key === "Backspace") && selectedId && !typing) {
         event.preventDefault();
         removeAnnotation(selectedId);
@@ -662,7 +729,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId, editingId]);
+  }, [selectedId, editingId, undo, redo]);
 
   const addAnnotation = (annotation: Annotation) => {
     setAnnotations((current) => [...current, annotation]);
@@ -753,6 +820,20 @@ function App() {
         return;
       }
       if (formZone) {
+        if (formZone.fieldType === "Btn") {
+          addAnnotation({
+            id: uid("checkbox"),
+            page,
+            type: "checkbox",
+            x: formZone.x,
+            y: formZone.y,
+            w: formZone.w,
+            h: formZone.h,
+            checked: /^(1|true|yes|y|checked|x)$/i.test(formZone.value ?? ""),
+            mark: "check",
+          });
+          return;
+        }
         addAnnotation({
           id: uid("field"),
           page,
@@ -851,15 +932,17 @@ function App() {
     }
 
     if (["checkbox", "radio", "checkmark"].includes(tool)) {
+      const size = tool === "checkmark" ? 0.035 : 0.032;
       addAnnotation({
         id: uid(tool),
         page,
         type: tool as ChoiceAnnotation["type"],
-        x: point.x,
-        y: point.y,
-        w: 0.032,
-        h: 0.032,
+        x: clamp(point.x - size / 2, 0, 1),
+        y: clamp(point.y - size / 2, 0, 1),
+        w: size,
+        h: size,
         checked: true,
+        mark: tool === "checkmark" ? "check" : "x",
       });
       return;
     }
@@ -913,11 +996,16 @@ function App() {
     }
 
     if (tool === "table") {
-      addAnnotation({ id: uid("table"), page, type: "table", x: point.x, y: point.y, w: 0.42, h: 0.16, rows: 3, cols: 3, color: palette.ink });
+      addAnnotation({ id: uid("table"), page, type: "table", x: point.x, y: point.y, w: 0.42, h: 0.16, rows: 3, cols: 3, color: palette.ink, cells: Array(9).fill("") });
+      setTool("select");
     }
   };
 
   const handlePagePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (["checkbox", "radio", "checkmark"].includes(tool)) {
+      const point = pagePoint(event, event.currentTarget);
+      setPlacementPreview({ page: Number(event.currentTarget.dataset.page), x: point.x, y: point.y, tool });
+    }
     if (tool === "eraser" && activeEraseRef.current) {
       const point = pagePoint(event, event.currentTarget);
       const page = Number(event.currentTarget.dataset.page);
@@ -1233,10 +1321,10 @@ function App() {
           page.drawEllipse({ x: x + box / 2, y: y + box / 2, xScale: box / 2, yScale: box / 2, borderColor: rgb(0.07, 0.09, 0.12), borderWidth: 1.5 });
           if (annotation.checked) page.drawEllipse({ x: x + box / 2, y: y + box / 2, xScale: box / 4, yScale: box / 4, color: rgb(0.07, 0.09, 0.12) });
         } else if (annotation.type === "checkmark") {
-          page.drawText("X", { x, y, size: box, font: boldFont, color: rgb(0.07, 0.09, 0.12) });
+          page.drawText(annotation.mark === "x" ? "X" : "✓", { x, y, size: box, font: boldFont, color: rgb(0.07, 0.09, 0.12) });
         } else {
           page.drawRectangle({ x, y, width: box, height: box, borderColor: rgb(0.07, 0.09, 0.12), borderWidth: 1.4, color: rgb(1, 1, 1) });
-          if (annotation.checked) page.drawText("X", { x: x + box * 0.18, y: y + box * 0.02, size: box * 0.9, font: boldFont, color: rgb(0.07, 0.09, 0.12) });
+          if (annotation.checked) page.drawText(annotation.mark === "check" ? "✓" : "X", { x: x + box * 0.12, y: y + box * 0.02, size: box * 0.9, font: boldFont, color: rgb(0.07, 0.09, 0.12) });
         }
       }
 
@@ -1262,6 +1350,22 @@ function App() {
         for (let col = 0; col <= annotation.cols; col += 1) {
           const x = left + (tableW / annotation.cols) * col;
           page.drawLine({ start: { x, y: bottom }, end: { x, y: bottom + tableH }, thickness: 1, color: rgb(color.r, color.g, color.b) });
+        }
+        const cellW = tableW / annotation.cols;
+        const cellH = tableH / annotation.rows;
+        for (let row = 0; row < annotation.rows; row += 1) {
+          for (let col = 0; col < annotation.cols; col += 1) {
+            const text = annotation.cells?.[row * annotation.cols + col] ?? "";
+            if (!text.trim()) continue;
+            page.drawText(text, {
+              x: left + col * cellW + 4,
+              y: bottom + tableH - (row + 1) * cellH + Math.max(4, cellH - 12),
+              size: Math.min(11, cellH * 0.55),
+              font,
+              color: rgb(0.07, 0.09, 0.12),
+              maxWidth: cellW - 8,
+            });
+          }
         }
       }
     }
@@ -1294,6 +1398,10 @@ function App() {
         bytes: Array.from(output),
       });
       if (!result.canceled && result.filePath) setStatus(`Saved ${result.filePath}`);
+      if (!result.canceled) {
+        setIsDirty(false);
+        void window.pdfFillerDesktop?.setDirty(false);
+      }
       return;
     }
     await downloadPdf();
@@ -1345,12 +1453,78 @@ function App() {
     setStatus(`Merged ${files.length} PDFs.`);
   };
 
+  const exportSelectedPages = async (indices: number[], defaultName: string) => {
+    if (!pdfBytes) return;
+    const source = await PDFDocument.load(pdfBytes.slice(0));
+    const output = await PDFDocument.create();
+    const pages = await output.copyPages(source, indices);
+    pages.forEach((page) => output.addPage(page));
+    await savePdfBytes(await output.save(), defaultName);
+  };
+
+  const deleteActivePage = async () => {
+    if (!pdfBytes || pageSizes.length <= 1) {
+      setStatus("Open a multi-page PDF before deleting a page.");
+      return;
+    }
+    const keep = pageSizes.map((_, index) => index).filter((index) => index !== activePage - 1);
+    const nextAnnotations = annotations
+      .filter((annotation) => annotation.page !== activePage)
+      .map((annotation) => annotation.page > activePage ? ({ ...annotation, page: annotation.page - 1 } as Annotation) : annotation);
+    const source = await PDFDocument.load(pdfBytes.slice(0));
+    const output = await PDFDocument.create();
+    const pages = await output.copyPages(source, keep);
+    pages.forEach((page) => output.addPage(page));
+    const bytes = await output.save();
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName);
+    setAnnotations(nextAnnotations);
+    setStatus(`Deleted page ${activePage}.`);
+  };
+
+  const rotateActivePage = async () => {
+    if (!pdfBytes) return;
+    const pdf = await PDFDocument.load(pdfBytes.slice(0));
+    const page = pdf.getPage(activePage - 1);
+    const current = page.getRotation().angle;
+    page.setRotation(degrees((current + 90) % 360));
+    const bytes = await pdf.save();
+    const preservedAnnotations = annotations;
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName);
+    setAnnotations(preservedAnnotations);
+    setStatus(`Rotated page ${activePage}.`);
+  };
+
+  const addPageNumbers = () => {
+    if (!pageSizes.length) return;
+    setAnnotations((current) => [
+      ...current,
+      ...pageSizes.map<TextAnnotation>((_, index) => ({
+        id: uid("pageNumber"),
+        page: index + 1,
+        type: "pageNumber",
+        x: 0.47,
+        y: 0.94,
+        w: 0.1,
+        h: 0.035,
+        text: `${index + 1}`,
+        color: palette.ink,
+        fontSize: 11,
+        bold: false,
+      })),
+    ]);
+    setStatus("Page numbers added.");
+  };
+
   const runTopMenuAction = (item: string) => {
     setActiveMenu(null);
     if (item === "Open PDF") document.getElementById("pdf-upload")?.click();
     if (item === "Save") void savePdf();
     if (item === "Print") void printPdf();
     if (item === "Merge PDFs") setMergeOpen(true);
+    if (item === "Split PDF" || item === "Extract PDF pages") void exportSelectedPages([activePage - 1], fileName.replace(/\.pdf$/i, `-page-${activePage}.pdf`));
+    if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") void deleteActivePage();
+    if (item === "Rotate PDF" || item === "Rotate PDF pages") void rotateActivePage();
+    if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
     if (item === "Add Text") setTool("text");
     if (item === "Add Images") {
@@ -1361,6 +1535,9 @@ function App() {
     if (item === "Watermark") addWatermark();
     if (item === "Sign Document") setTool("signature");
     if (item === "Initials") setTool("initials");
+    if (/Word|PowerPoint|Excel|Compress|Unlock|Protect|OCR|Summarize|Translate|Markdown|Repair|Compare|Scan/i.test(item)) {
+      setStatus(`${item} needs a dedicated conversion/security engine. Local editing tools are available now.`);
+    }
   };
 
   const exportTemplate = () => {
@@ -1590,6 +1767,7 @@ function App() {
                 selectedId={selectedId}
                 editingId={editingId}
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
+                placementPreview={placementPreview?.page === index + 1 ? placementPreview : null}
                 onPageRef={(node) => {
                   pageRefs.current[index + 1] = node;
                 }}
@@ -1873,6 +2051,7 @@ function PdfPage({
   selectedId,
   editingId,
   draftBox,
+  placementPreview,
   onPageRef,
   onPointerDown,
   onPointerMove,
@@ -1898,6 +2077,7 @@ function PdfPage({
   selectedId: string | null;
   editingId: string | null;
   draftBox: DraftBox | null;
+  placementPreview: { page: number; x: number; y: number; tool: Tool } | null;
   onPageRef: (node: HTMLElement | null) => void;
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -1977,6 +2157,19 @@ function PdfPage({
                 height: `${Math.abs(draftBox.h) * 100}%`,
               }}
             />
+          )}
+          {placementPreview && (
+            <div
+              className={`placementPreview ${placementPreview.tool}`}
+              style={{
+                left: `${(placementPreview.x - 0.017) * 100}%`,
+                top: `${(placementPreview.y - 0.017) * 100}%`,
+                width: "3.4%",
+                height: "3.4%",
+              }}
+            >
+              {placementPreview.tool === "radio" ? "o" : placementPreview.tool === "checkbox" ? "☑" : "✓"}
+            </div>
           )}
         </div>
       </div>
@@ -2115,9 +2308,26 @@ function AnnotationView({
           }}
         />
       )}
-      {isChoiceAnnotation(annotation) && <span className="checkmark">{annotation.type === "radio" ? (annotation.checked ? "o" : "") : annotation.checked ? "X" : ""}</span>}
+      {isChoiceAnnotation(annotation) && (
+        <span className="checkmark">
+          {annotation.type === "radio" ? (annotation.checked ? "o" : "") : annotation.checked ? (annotation.mark === "check" ? "✓" : "X") : ""}
+        </span>
+      )}
       {annotation.type === "arrow" && <ArrowOverlay color={annotation.color} width={annotation.width} />}
-      {annotation.type === "table" && <TableOverlay rows={annotation.rows} cols={annotation.cols} color={annotation.color} />}
+      {annotation.type === "table" && (
+        <TableOverlay
+          rows={annotation.rows}
+          cols={annotation.cols}
+          color={annotation.color}
+          cells={annotation.cells ?? []}
+          editable={selected}
+          onCellChange={(index, value) => {
+            const cells = Array.from({ length: annotation.rows * annotation.cols }, (_, cellIndex) => annotation.cells?.[cellIndex] ?? "");
+            cells[index] = value;
+            onUpdate(annotation.id, { cells });
+          }}
+        />
+      )}
       {selected && (
         <>
           <button className="deleteBubble" onClick={(event) => { event.stopPropagation(); onRemove(annotation.id); }} title="Delete"><Trash2 size={13} /></button>
@@ -2137,10 +2347,18 @@ function ArrowOverlay({ color, width }: { color: string; width: number }) {
   );
 }
 
-function TableOverlay({ rows, cols, color }: { rows: number; cols: number; color: string }) {
+function TableOverlay({ rows, cols, color, cells, editable, onCellChange }: { rows: number; cols: number; color: string; cells: string[]; editable: boolean; onCellChange: (index: number, value: string) => void }) {
   return (
     <div className="tableOverlay" style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gridTemplateRows: `repeat(${rows}, 1fr)` }}>
-      {Array.from({ length: rows * cols }).map((_, index) => <span key={index} style={{ borderColor: color }} />)}
+      {Array.from({ length: rows * cols }).map((_, index) => (
+        <span key={index} style={{ borderColor: color }}>
+          {editable ? (
+            <input value={cells[index] ?? ""} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => onCellChange(index, event.target.value)} />
+          ) : (
+            cells[index] ?? ""
+          )}
+        </span>
+      ))}
     </div>
   );
 }
@@ -2243,14 +2461,31 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
         </>
       )}
       {isChoiceAnnotation(annotation) && (
-        <label className="checkRow"><input type="checkbox" checked={annotation.checked} onChange={(event) => update({ checked: event.target.checked })} /> Checked</label>
+        <>
+          <label className="checkRow"><input type="checkbox" checked={annotation.checked} onChange={(event) => update({ checked: event.target.checked })} /> Checked</label>
+          {annotation.type !== "radio" && (
+            <>
+              <label>Mark</label>
+              <select value={annotation.mark ?? "x"} onChange={(event) => update({ mark: event.target.value as "check" | "x" })}>
+                <option value="check">Tick</option>
+                <option value="x">X</option>
+              </select>
+            </>
+          )}
+        </>
       )}
       {annotation.type === "table" && (
         <>
           <label>Rows</label>
-          <input type="number" min="1" max="20" value={annotation.rows} onChange={(event) => update({ rows: Number(event.target.value) })} />
+          <input type="number" min="1" max="20" value={annotation.rows} onChange={(event) => {
+            const rows = Number(event.target.value);
+            update({ rows, cells: Array.from({ length: rows * annotation.cols }, (_, index) => annotation.cells?.[index] ?? "") });
+          }} />
           <label>Columns</label>
-          <input type="number" min="1" max="12" value={annotation.cols} onChange={(event) => update({ cols: Number(event.target.value) })} />
+          <input type="number" min="1" max="12" value={annotation.cols} onChange={(event) => {
+            const cols = Number(event.target.value);
+            update({ cols, cells: Array.from({ length: annotation.rows * cols }, (_, index) => annotation.cells?.[index] ?? "") });
+          }} />
         </>
       )}
       <button className="wideButton danger" onClick={remove}><Trash2 size={18} /> Delete Item</button>
