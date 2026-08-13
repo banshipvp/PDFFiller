@@ -280,10 +280,16 @@ button:disabled {
 
 .wideButton.primary,
 .primaryAction {
-  background: #2563eb;
-  border-color: #2563eb;
+  background: #1d4ed8;
+  border-color: #1d4ed8;
   color: #ffffff;
   font-weight: 800;
+}
+
+.wideButton.primary:hover,
+.primaryAction:hover {
+  background: #1e40af;
+  border-color: #1e40af;
 }
 
 .wideButton.danger {
@@ -710,6 +716,13 @@ button:disabled {
 
 .placementPreview.radio {
   border-radius: 999px;
+}
+
+.imagePlacementPreview {
+  opacity: 0.72;
+  pointer-events: none;
+  position: absolute;
+  user-select: none;
 }
 
 .inspector section {

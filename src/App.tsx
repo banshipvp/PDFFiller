@@ -482,6 +482,7 @@ function App() {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
+  const [imagePlacementPreview, setImagePlacementPreview] = useState<{ page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null>(null);
   const isDesktop = Boolean(window.pdfFillerDesktop);
   const historyRef = useRef<Annotation[][]>([]);
   const redoRef = useRef<Annotation[][]>([]);
@@ -966,14 +967,16 @@ function App() {
         setSignatureModal(tool);
         return;
       }
+      const w = tool === "signature" ? 0.28 : 0.12;
+      const h = tool === "signature" ? 0.08 : 0.06;
       addAnnotation({
         id: uid(tool),
         page,
         type: tool,
-        x: point.x,
-        y: point.y,
-        w: tool === "signature" ? 0.28 : 0.12,
-        h: tool === "signature" ? 0.08 : 0.06,
+        x: clamp(point.x - w / 2, 0, 1),
+        y: clamp(point.y - h / 2, 0, 1),
+        w,
+        h,
         dataUrl: asset.dataUrl,
         label: asset.label,
       });
@@ -1017,6 +1020,23 @@ function App() {
     if (["checkbox", "radio", "checkmark"].includes(tool)) {
       const point = pagePoint(event, event.currentTarget);
       setPlacementPreview({ page: Number(event.currentTarget.dataset.page), x: point.x, y: point.y, tool });
+      setImagePlacementPreview(null);
+    } else if (tool === "signature" || tool === "initials") {
+      const assetId = tool === "signature" ? activeSignature : activeInitials;
+      const asset = assets.find((item) => item.id === assetId);
+      const point = pagePoint(event, event.currentTarget);
+      if (asset) {
+        setImagePlacementPreview({
+          page: Number(event.currentTarget.dataset.page),
+          x: point.x,
+          y: point.y,
+          w: tool === "signature" ? 0.28 : 0.12,
+          h: tool === "signature" ? 0.08 : 0.06,
+          dataUrl: asset.dataUrl,
+          label: asset.label,
+        });
+      }
+      setPlacementPreview(null);
     }
     if (tool === "eraser" && activeEraseRef.current) {
       const point = pagePoint(event, event.currentTarget);
@@ -1466,12 +1486,27 @@ function App() {
   };
 
   const exportSelectedPages = async (indices: number[], defaultName: string) => {
-    if (!pdfBytes) return;
+    if (!pdfBytes) {
+      setStatus("Open a PDF before using this tool.");
+      return;
+    }
     const source = await PDFDocument.load(pdfBytes.slice(0));
     const output = await PDFDocument.create();
     const pages = await output.copyPages(source, indices);
     pages.forEach((page) => output.addPage(page));
     await savePdfBytes(await output.save(), defaultName);
+  };
+
+  const splitPdf = async () => {
+    if (!pdfBytes || !pageSizes.length) {
+      setStatus("Open a PDF before splitting it.");
+      return;
+    }
+    setStatus(`Splitting ${pageSizes.length} pages...`);
+    for (let index = 0; index < pageSizes.length; index += 1) {
+      await exportSelectedPages([index], fileName.replace(/\.pdf$/i, `-page-${index + 1}.pdf`));
+    }
+    setStatus(`Split ${pageSizes.length} pages.`);
   };
 
   const deleteActivePage = async () => {
@@ -1533,9 +1568,10 @@ function App() {
     if (item === "Save") void savePdf();
     if (item === "Print") void printPdf();
     if (item === "Merge PDFs") setMergeOpen(true);
-    if (item === "Split PDF" || item === "Extract PDF pages") void exportSelectedPages([activePage - 1], fileName.replace(/\.pdf$/i, `-page-${activePage}.pdf`));
+    if (item === "Split PDF") void splitPdf();
+    if (item === "Extract PDF pages") void exportSelectedPages([activePage - 1], fileName.replace(/\.pdf$/i, `-page-${activePage}.pdf`));
     if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") void deleteActivePage();
-    if (item === "Rotate PDF" || item === "Rotate PDF pages") void rotateActivePage();
+    if (item === "Rotate PDF" || item === "Rotate PDF pages" || item === "Organize Pages") void rotateActivePage();
     if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
     if (item === "Add Text") setTool("text");
@@ -1795,6 +1831,7 @@ function App() {
                 editingId={editingId}
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
                 placementPreview={placementPreview?.page === index + 1 ? placementPreview : null}
+                imagePlacementPreview={imagePlacementPreview?.page === index + 1 ? imagePlacementPreview : null}
                 onPageRef={(node) => {
                   pageRefs.current[index + 1] = node;
                 }}
@@ -2079,6 +2116,7 @@ function PdfPage({
   editingId,
   draftBox,
   placementPreview,
+  imagePlacementPreview,
   onPageRef,
   onPointerDown,
   onPointerMove,
@@ -2105,6 +2143,7 @@ function PdfPage({
   editingId: string | null;
   draftBox: DraftBox | null;
   placementPreview: { page: number; x: number; y: number; tool: Tool } | null;
+  imagePlacementPreview: { page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null;
   onPageRef: (node: HTMLElement | null) => void;
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -2197,6 +2236,19 @@ function PdfPage({
             >
               {placementPreview.tool === "radio" ? "o" : placementPreview.tool === "checkbox" ? "☑" : "✓"}
             </div>
+          )}
+          {imagePlacementPreview && (
+            <img
+              className="imagePlacementPreview"
+              src={imagePlacementPreview.dataUrl}
+              alt={imagePlacementPreview.label}
+              style={{
+                left: `${(imagePlacementPreview.x - imagePlacementPreview.w / 2) * 100}%`,
+                top: `${(imagePlacementPreview.y - imagePlacementPreview.h / 2) * 100}%`,
+                width: `${imagePlacementPreview.w * 100}%`,
+                height: `${imagePlacementPreview.h * 100}%`,
+              }}
+            />
           )}
         </div>
       </div>
