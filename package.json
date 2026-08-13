@@ -1,6 +1,6 @@
 {
   "name": "pdffiller",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "A local desktop PDF filling and signing app.",
   "author": "Local",
   "private": true,
@@ -22,6 +22,7 @@
   "build": {
     "appId": "com.local.pdffiller",
     "productName": "PDF Filler",
+    "artifactName": "PDF-Filler-Setup-${version}.${ext}",
     "directories": {
       "output": "desktop-release"
     },

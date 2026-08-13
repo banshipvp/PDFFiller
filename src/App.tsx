@@ -1377,7 +1377,10 @@ function App() {
       <header className="globalNav">
         <div className="globalBrand">
           <span className="brandMark compact">PF</span>
-          <strong>PDF Filler</strong>
+          <div className="globalBrandText">
+            <strong>PDF Filler</strong>
+            <span>v{appVersion}</span>
+          </div>
         </div>
         <nav className="menuBar" aria-label="Application menu">
           {topMenus.map((menu) => (

@@ -65,7 +65,7 @@ function createWindow() {
     height: 880,
     minWidth: 980,
     minHeight: 680,
-    title: "PDF Filler",
+    title: `PDF Filler ${app.getVersion()}`,
     backgroundColor: "#f1f5f9",
     resizable: true,
     maximizable: true,
