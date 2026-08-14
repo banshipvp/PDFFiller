@@ -102,6 +102,8 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
 
+  mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+
   mainWindow.on("closed", () => {
     mainWindow = null;
   });

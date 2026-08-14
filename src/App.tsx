@@ -744,6 +744,18 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId, editingId, undo, redo]);
 
+  useEffect(() => {
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest(".documentScroller")) return;
+      event.preventDefault();
+      setZoom((value) => clamp(value + (event.deltaY < 0 ? 0.1 : -0.1), 0.45, 2.5));
+    };
+    window.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => window.removeEventListener("wheel", onWheel, { capture: true });
+  }, []);
+
   const addAnnotation = (annotation: Annotation) => {
     setAnnotations((current) => [...current, annotation]);
     setSelectedId(annotation.id);
@@ -1609,7 +1621,7 @@ function App() {
   };
 
   const onDocumentWheel = (event: React.WheelEvent<HTMLDivElement>) => {
-    if (!event.ctrlKey) return;
+    if (!event.ctrlKey || event.defaultPrevented) return;
     event.preventDefault();
     setZoom((value) => clamp(value + (event.deltaY < 0 ? 0.1 : -0.1), 0.45, 2.5));
   };

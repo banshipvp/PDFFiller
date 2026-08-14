@@ -9,8 +9,7 @@
       <stop offset="1" stop-color="#60a5fa"/>
     </linearGradient>
   </defs>
-  <rect width="256" height="256" rx="52" fill="#172033"/>
-  <path d="M67 26h91l49 50v154H67z" fill="url(#paper)"/>
+  <path d="M67 26h91l49 50v154H67z" fill="url(#paper)" filter="drop-shadow(0 14px 18px rgba(15, 23, 42, 0.22))"/>
   <path d="M158 26v51h49z" fill="url(#tab)"/>
   <path d="M67 26h91l49 50v154H67z" fill="none" stroke="#dbe5f0" stroke-width="6"/>
   <rect x="48" y="136" width="160" height="60" rx="12" fill="#ef4444"/>
