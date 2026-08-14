@@ -15,7 +15,7 @@
     "desktop:dev": "set ELECTRON_RUN_AS_NODE=&& set PDF_FILLER_DEV=1&& start /B npm run dev && electron .",
     "dist:win": "npm run build && electron-builder --win nsis --publish never",
     "dist:win:portable": "npm run build && electron-builder --win portable --publish never",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:mac": "npm run build && electron-builder --mac zip --publish never",
     "dist:win:github": "npm run build && electron-builder --win nsis --publish always",
     "release:patch": "npm version patch && git push origin main --follow-tags",
     "release:minor": "npm version minor && git push origin main --follow-tags"
@@ -50,13 +50,9 @@
       "icon": "assets/app-icon-mac.png",
       "category": "public.app-category.productivity",
       "target": [
-        "dmg",
         "zip"
       ],
       "identity": null
-    },
-    "dmg": {
-      "artifactName": "PDF-Filler-${version}-${arch}.${ext}"
     },
     "nsis": {
       "installerIcon": "assets/app-icon.ico",

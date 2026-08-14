@@ -40,12 +40,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npx electron-builder --mac dmg zip --publish never
+      - run: npx electron-builder --mac zip --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: PDF-Filler-Mac-${{ github.ref_name }}
           path: |
-            desktop-release/*.dmg
             desktop-release/*.zip
             desktop-release/*.blockmap
             desktop-release/latest-mac.yml
