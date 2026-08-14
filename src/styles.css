@@ -38,10 +38,74 @@ button:disabled {
 
 .shell {
   display: grid;
-  grid-template-rows: 58px minmax(0, 1fr);
+  grid-template-rows: 58px 38px minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
   min-width: 0;
+}
+
+.documentTabs {
+  align-items: end;
+  background: #e8eef6;
+  border-bottom: 1px solid #c8d3df;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 5px 10px 0;
+}
+
+.docTab {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #cbd6e2;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: #334155;
+  display: inline-flex;
+  gap: 7px;
+  max-width: 280px;
+  min-height: 33px;
+  min-width: 120px;
+  padding: 7px 8px;
+}
+
+.docTab.active {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.docTab span {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docTab strong {
+  color: #d97706;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.docTab em {
+  align-items: center;
+  border-radius: 999px;
+  color: #64748b;
+  display: inline-flex;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 900;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.docTab em:hover {
+  background: #e2e8f0;
+  color: #b91c1c;
 }
 
 .globalNav {
@@ -699,6 +763,32 @@ button:disabled {
 
 .draftBox.circle {
   border-radius: 999px;
+}
+
+.draftBox.line,
+.draftBox.arrow {
+  border: 0;
+}
+
+.draftBox.line::before,
+.draftBox.arrow::before {
+  background: #2563eb;
+  content: "";
+  height: 2px;
+  left: 0;
+  position: absolute;
+  top: 50%;
+  transform: rotate(-18deg);
+  transform-origin: left center;
+  width: 100%;
+}
+
+.eraserPreview {
+  background: #2563eb;
+  border: 2px solid #1d4ed8;
+  border-radius: 999px;
+  pointer-events: none;
+  position: absolute;
 }
 
 .placementPreview {
@@ -1396,6 +1486,50 @@ button:disabled {
 .iconDanger {
   color: #b91c1c;
   padding: 7px 9px;
+}
+
+.toolContextMenu {
+  background: #ffffff;
+  border: 1px solid #cbd6e2;
+  border-radius: 8px;
+  box-shadow: 0 22px 55px rgba(15, 23, 42, 0.24);
+  display: grid;
+  gap: 8px;
+  max-width: 280px;
+  padding: 12px;
+  position: fixed;
+  width: 270px;
+  z-index: 70;
+}
+
+.toolContextMenu header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.toolContextMenu header strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.toolContextMenu header button {
+  background: #eef2f7;
+  border-radius: 999px;
+  color: #475569;
+  font-weight: 900;
+  height: 24px;
+  width: 24px;
+}
+
+.toolContextMenu label {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.toolContextMenu input[type="range"] {
+  width: 100%;
 }
 
 .signatureModal {

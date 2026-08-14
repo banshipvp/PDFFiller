@@ -14,6 +14,7 @@ import {
   Image as ImageIcon,
   Lock,
   MessageSquare,
+  Minus,
   MousePointer2,
   PenLine,
   Plus,
@@ -21,6 +22,8 @@ import {
   Radio,
   RefreshCw,
   RotateCcw,
+  RotateCw,
+  Redo2,
   Save,
   Scissors,
   Settings,
@@ -30,6 +33,7 @@ import {
   Table2,
   Trash2,
   Type,
+  Undo2,
   Upload,
   Wand2,
   ZoomIn,
@@ -60,6 +64,7 @@ type Tool =
   | "image"
   | "comment"
   | "note"
+  | "line"
   | "arrow"
   | "circle"
   | "rectangle"
@@ -117,7 +122,7 @@ type ChoiceAnnotation = BaseAnnotation & {
 };
 
 type ArrowAnnotation = BaseAnnotation & {
-  type: "arrow";
+  type: "arrow" | "line";
   color: string;
   width: number;
 };
@@ -163,7 +168,7 @@ type SignatureFont = {
 type DraftBox = {
   id: string;
   page: number;
-  type: "whiteout" | "highlight" | "circle" | "rectangle";
+  type: "whiteout" | "highlight" | "circle" | "rectangle" | "line" | "arrow";
   x: number;
   y: number;
   w: number;
@@ -183,6 +188,27 @@ type FormZone = BaseAnnotation & {
 
 type LineZone = BaseAnnotation & {
   source: "line";
+};
+
+type PdfTabState = {
+  id: string;
+  fileName: string;
+  currentPath: string | null;
+  pdfBytes: ArrayBuffer;
+  pdfDoc: any;
+  pageSizes: PageSize[];
+  textZones: TextZone[];
+  formZones: FormZone[];
+  lineZones: LineZone[];
+  annotations: Annotation[];
+  selectedId: string | null;
+  editingId: string | null;
+  zoom: number;
+  activePage: number;
+  isDirty: boolean;
+  status: string;
+  history: Annotation[][];
+  redo: Annotation[][];
 };
 
 type PageRange = {
@@ -228,6 +254,7 @@ const primaryTools: Array<{ id: Tool; label: string; Icon: typeof MousePointer2 
   { id: "image", label: "Image", Icon: ImageIcon },
   { id: "comment", label: "Comment", Icon: MessageSquare },
   { id: "note", label: "Note", Icon: StickyNote },
+  { id: "line", label: "Line", Icon: Minus },
   { id: "arrow", label: "Arrow", Icon: ArrowRight },
   { id: "circle", label: "Circle", Icon: Circle },
   { id: "rectangle", label: "Rectangle", Icon: Square },
@@ -261,7 +288,7 @@ const featureGroups = [
 
 const topMenus = [
   { title: "Home", items: ["Open PDF", "Save", "Print"] },
-  { title: "Tools", items: ["Merge PDFs", "Split PDF", "Extract PDF pages", "Delete PDF pages", "Rotate PDF", "Add page numbers", "Compress PDF", "Organize Pages"] },
+  { title: "Tools", items: ["Merge PDFs", "Split PDF", "Extract PDF pages", "Delete PDF pages", "Add page numbers", "Compress PDF", "Organize Pages"] },
   { title: "Convert", items: ["PDF to JPEG", "JPEG to PDF", "Word to PDF", "PDF to Word"] },
   { title: "Edit", items: ["Edit PDF", "Add Text", "Add Images", "Erase", "Watermark", "Number PDF pages"] },
   { title: "Sign & Protect", items: ["Sign Document", "Initials", "Protect PDF", "Redact PDF"] },
@@ -494,6 +521,8 @@ function parsePrefillEntries(value: string) {
 function App() {
   const [pdfBytes, setPdfBytes] = useState<ArrayBuffer | null>(null);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [tabs, setTabs] = useState<PdfTabState[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [fileName, setFileName] = useState("untitled.pdf");
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
@@ -512,6 +541,13 @@ function App() {
   const [signatureModal, setSignatureModal] = useState<"signature" | "initials" | null>(null);
   const [drawColor, setDrawColor] = useState(palette.ink);
   const [drawWidth, setDrawWidth] = useState(3);
+  const [eraserSize, setEraserSize] = useState(28);
+  const [eraserOpacity, setEraserOpacity] = useState(0.18);
+  const [shapeFillColor, setShapeFillColor] = useState("#ffffff");
+  const [shapeStrokeColor, setShapeStrokeColor] = useState(palette.ink);
+  const [shapeFillOpacity, setShapeFillOpacity] = useState(0.35);
+  const [shapeStrokeOpacity, setShapeStrokeOpacity] = useState(1);
+  const [shapeStrokeWidth, setShapeStrokeWidth] = useState(2);
   const [textColor, setTextColor] = useState(palette.ink);
   const [prefillText, setPrefillText] = useState("");
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
@@ -535,9 +571,12 @@ function App() {
   const [mergeOpen, setMergeOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
   const [removePagesOpen, setRemovePagesOpen] = useState(false);
+  const [extractPagesOpen, setExtractPagesOpen] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
   const [imagePlacementPreview, setImagePlacementPreview] = useState<{ page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null>(null);
+  const [eraserPreview, setEraserPreview] = useState<{ page: number; x: number; y: number } | null>(null);
+  const [toolMenu, setToolMenu] = useState<{ tool: Tool; x: number; y: number } | null>(null);
   const isDesktop = Boolean(window.pdfFillerDesktop);
   const historyRef = useRef<Annotation[][]>([]);
   const redoRef = useRef<Annotation[][]>([]);
@@ -564,7 +603,97 @@ function App() {
     [annotations, selectedId],
   );
 
-  const loadPdfBytes = async (bytes: ArrayBuffer, name: string, sourcePath: string | null = null) => {
+  const currentTabSnapshot = useCallback((id = activeTabId): PdfTabState | null => {
+    if (!id || !pdfBytes || !pdfDoc) return null;
+    return {
+      id,
+      fileName,
+      currentPath,
+      pdfBytes,
+      pdfDoc,
+      pageSizes,
+      textZones,
+      formZones,
+      lineZones,
+      annotations,
+      selectedId,
+      editingId,
+      zoom,
+      activePage,
+      isDirty,
+      status,
+      history: historyRef.current,
+      redo: redoRef.current,
+    };
+  }, [activePage, activeTabId, annotations, currentPath, editingId, fileName, formZones, isDirty, lineZones, pageSizes, pdfBytes, pdfDoc, selectedId, status, textZones, zoom]);
+
+  const restoreTab = (tab: PdfTabState) => {
+    suppressHistoryRef.current = true;
+    loadedRef.current = true;
+    historyRef.current = tab.history;
+    redoRef.current = tab.redo;
+    lastAnnotationsRef.current = tab.annotations;
+    setActiveTabId(tab.id);
+    setPdfBytes(tab.pdfBytes);
+    setPdfDoc(tab.pdfDoc);
+    setFileName(tab.fileName);
+    setCurrentPath(tab.currentPath);
+    setPageSizes(tab.pageSizes);
+    setTextZones(tab.textZones);
+    setFormZones(tab.formZones);
+    setLineZones(tab.lineZones);
+    setAnnotations(tab.annotations);
+    setSelectedId(tab.selectedId);
+    setEditingId(tab.editingId);
+    setZoom(tab.zoom);
+    setActivePage(tab.activePage);
+    setIsDirty(tab.isDirty);
+    setStatus(tab.status);
+    void window.pdfFillerDesktop?.setDirty(tabs.some((candidate) => candidate.id === tab.id ? tab.isDirty : candidate.isDirty));
+  };
+
+  const activateTab = (id: string) => {
+    if (id === activeTabId) return;
+    const snapshot = currentTabSnapshot();
+    const nextTabs = snapshot ? tabs.map((tab) => (tab.id === snapshot.id ? snapshot : tab)) : tabs;
+    const target = nextTabs.find((tab) => tab.id === id);
+    if (!target) return;
+    setTabs(nextTabs);
+    restoreTab(target);
+  };
+
+  const closeTab = (id: string) => {
+    const snapshot = currentTabSnapshot();
+    const nextTabs = (snapshot ? tabs.map((tab) => (tab.id === snapshot.id ? snapshot : tab)) : tabs).filter((tab) => tab.id !== id);
+    setTabs(nextTabs);
+    if (id !== activeTabId) {
+      void window.pdfFillerDesktop?.setDirty(nextTabs.some((tab) => tab.isDirty));
+      return;
+    }
+    const next = nextTabs[0] ?? null;
+    if (next) {
+      restoreTab(next);
+      return;
+    }
+    setActiveTabId(null);
+    setPdfBytes(null);
+    setPdfDoc(null);
+    setFileName("untitled.pdf");
+    setCurrentPath(null);
+    setPageSizes([]);
+    setTextZones([]);
+    setFormZones([]);
+    setLineZones([]);
+    setAnnotations([]);
+    setSelectedId(null);
+    setEditingId(null);
+    setIsDirty(false);
+    setStatus("Ready");
+    void window.pdfFillerDesktop?.setDirty(false);
+  };
+
+  const loadPdfBytes = async (bytes: ArrayBuffer, name: string, sourcePath: string | null = null, options: { replaceActive?: boolean } = {}) => {
+    const previousSnapshot = currentTabSnapshot();
     setStatus("Opening PDF...");
     const task = getDocument({ data: bytes.slice(0) });
     const doc = await task.promise;
@@ -641,6 +770,35 @@ function App() {
       }
     }
 
+    const statusText = `${doc.numPages} page${doc.numPages === 1 ? "" : "s"}, ${extractedForms.length} form fields, ${extractedLines.length} fill lines`;
+    const tabId = options.replaceActive && activeTabId ? activeTabId : uid("tab");
+    const nextTab: PdfTabState = {
+      id: tabId,
+      fileName: name,
+      currentPath: sourcePath,
+      pdfBytes: bytes,
+      pdfDoc: doc,
+      pageSizes: sizes,
+      textZones: extractedText,
+      formZones: extractedForms,
+      lineZones: extractedLines,
+      annotations: importedAnnotations,
+      selectedId: null,
+      editingId: null,
+      zoom: 1,
+      activePage: 1,
+      isDirty: false,
+      status: statusText,
+      history: [],
+      redo: [],
+    };
+
+    setTabs((current) => {
+      const updated = previousSnapshot ? current.map((tab) => (tab.id === previousSnapshot.id ? previousSnapshot : tab)) : current;
+      const withoutExisting = updated.filter((tab) => tab.id !== tabId);
+      return options.replaceActive ? [...withoutExisting, nextTab] : [...withoutExisting, nextTab];
+    });
+    setActiveTabId(tabId);
     setPdfBytes(bytes);
     setPdfDoc(doc);
     setFileName(name);
@@ -660,9 +818,8 @@ function App() {
     setIsDirty(false);
     void window.pdfFillerDesktop?.setDirty(false);
     setActivePage(1);
-    setStatus(
-      `${doc.numPages} page${doc.numPages === 1 ? "" : "s"}, ${extractedText.length} text runs, ${extractedForms.length} form fields, ${extractedLines.length} fill lines`,
-    );
+    setZoom(1);
+    setStatus(statusText);
   };
 
   const loadPdf = async (file: File) => {
@@ -749,6 +906,9 @@ function App() {
     redoRef.current = [];
     lastAnnotationsRef.current = annotations;
     setIsDirty(true);
+    setTabs((current) =>
+      current.map((tab) => (tab.id === activeTabId ? { ...tab, annotations, isDirty: true, history: historyRef.current, redo: redoRef.current } : tab)),
+    );
     void window.pdfFillerDesktop?.setDirty(true);
   }, [annotations]);
 
@@ -888,7 +1048,8 @@ function App() {
 
     if (tool === "eraser") {
       activeEraseRef.current = true;
-      setAnnotations((current) => eraseDrawingsAt(current, page, point));
+      setEraserPreview({ page, x: point.x, y: point.y });
+      setAnnotations((current) => eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth));
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -1065,15 +1226,10 @@ function App() {
       return;
     }
 
-    if (["whiteout", "highlight", "circle", "rectangle"].includes(tool)) {
+    if (["whiteout", "highlight", "circle", "rectangle", "line", "arrow"].includes(tool)) {
       const id = uid(tool);
       setDraftBox({ id, page, type: tool as DraftBox["type"], x: point.x, y: point.y, w: 0.001, h: 0.001 });
       event.currentTarget.setPointerCapture(event.pointerId);
-      return;
-    }
-
-    if (tool === "arrow") {
-      addAnnotation({ id: uid("arrow"), page, type: "arrow", x: point.x, y: point.y, w: 0.2, h: 0.08, color: drawColor, width: drawWidth });
       return;
     }
 
@@ -1104,11 +1260,17 @@ function App() {
         });
       }
       setPlacementPreview(null);
+    } else if (tool === "eraser") {
+      const point = pagePoint(event, event.currentTarget);
+      setEraserPreview({ page: Number(event.currentTarget.dataset.page), x: point.x, y: point.y });
+      setPlacementPreview(null);
+      setImagePlacementPreview(null);
     }
     if (tool === "eraser" && activeEraseRef.current) {
       const point = pagePoint(event, event.currentTarget);
       const page = Number(event.currentTarget.dataset.page);
-      setAnnotations((current) => eraseDrawingsAt(current, page, point));
+      setEraserPreview({ page, x: point.x, y: point.y });
+      setAnnotations((current) => eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth));
       return;
     }
 
@@ -1127,7 +1289,17 @@ function App() {
 
     if (draftBox) {
       const point = pagePoint(event, event.currentTarget);
-      setDraftBox((current) => (current ? { ...current, w: point.x - current.x, h: point.y - current.y } : null));
+      setDraftBox((current) => {
+        if (!current) return null;
+        let w = point.x - current.x;
+        let h = point.y - current.y;
+        if (event.shiftKey && (current.type === "circle" || current.type === "rectangle" || current.type === "whiteout" || current.type === "highlight")) {
+          const size = Math.min(Math.abs(w), Math.abs(h));
+          w = Math.sign(w || 1) * size;
+          h = Math.sign(h || 1) * size;
+        }
+        return { ...current, w, h };
+      });
     }
   };
 
@@ -1136,6 +1308,7 @@ function App() {
       activeDrawRef.current = null;
     }
     activeEraseRef.current = false;
+    setEraserPreview(null);
     if (!draftBox) return;
     const normalized = {
       x: draftBox.w < 0 ? draftBox.x + draftBox.w : draftBox.x,
@@ -1143,6 +1316,21 @@ function App() {
       w: Math.abs(draftBox.w),
       h: Math.abs(draftBox.h),
     };
+    if (draftBox.type === "line" || draftBox.type === "arrow") {
+      addAnnotation({
+        id: draftBox.id,
+        page: draftBox.page,
+        type: draftBox.type,
+        x: clamp(normalized.x, 0, 1),
+        y: clamp(normalized.y, 0, 1),
+        w: clamp(normalized.w || 0.16, 0.01, 1),
+        h: clamp(normalized.h || 0.05, 0.01, 1),
+        color: shapeStrokeColor,
+        width: shapeStrokeWidth,
+      });
+      setDraftBox(null);
+      return;
+    }
     const isShape = draftBox.type === "circle" || draftBox.type === "rectangle";
     const color = draftBox.type === "highlight" ? "#fde047" : draftBox.type === "whiteout" ? "#ffffff" : drawColor;
     addAnnotation({
@@ -1153,16 +1341,16 @@ function App() {
       y: clamp(normalized.y, 0, 1),
       w: clamp(normalized.w || 0.16, 0.01, 1),
       h: clamp(normalized.h || 0.05, 0.01, 1),
-      color,
-      opacity: draftBox.type === "highlight" ? 0.45 : 1,
+      color: isShape ? shapeFillColor : color,
+      opacity: draftBox.type === "highlight" ? 0.45 : isShape ? shapeFillOpacity : 1,
       stroke: isShape,
-      filled: !isShape,
+      filled: isShape ? true : !isShape,
       outlined: isShape,
-      fillColor: color,
-      strokeColor: drawColor,
-      fillOpacity: draftBox.type === "highlight" ? 0.45 : 1,
-      strokeOpacity: 1,
-      strokeWidth: 2,
+      fillColor: isShape ? shapeFillColor : color,
+      strokeColor: isShape ? shapeStrokeColor : drawColor,
+      fillOpacity: draftBox.type === "highlight" ? 0.45 : isShape ? shapeFillOpacity : 1,
+      strokeOpacity: isShape ? shapeStrokeOpacity : 1,
+      strokeWidth: isShape ? shapeStrokeWidth : 2,
     });
     setDraftBox(null);
   };
@@ -1238,9 +1426,9 @@ function App() {
         fontSize: clamp(zone.fontSize, 7, 28),
         bold: false,
         background: "#ffffff",
-      }));
+    }));
     setAnnotations((current) => [...current, ...imports]);
-    setStatus(`Imported ${imports.length} editable text boxes from the PDF text layer.`);
+    setStatus("Editable text boxes added.");
   };
 
   const applyPrefill = () => {
@@ -1427,13 +1615,15 @@ function App() {
         }
       }
 
-      if (annotation.type === "arrow") {
+      if (annotation.type === "arrow" || annotation.type === "line") {
         const color = hexToRgb(annotation.color);
         const start = { x: annotation.x * width, y: height - annotation.y * height - annotation.h * height };
         const end = { x: annotation.x * width + annotation.w * width, y: height - annotation.y * height };
         page.drawLine({ start, end, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
-        page.drawLine({ start: end, end: { x: end.x - 12, y: end.y - 4 }, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
-        page.drawLine({ start: end, end: { x: end.x - 5, y: end.y - 12 }, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
+        if (annotation.type === "arrow") {
+          page.drawLine({ start: end, end: { x: end.x - 12, y: end.y - 4 }, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
+          page.drawLine({ start: end, end: { x: end.x - 5, y: end.y - 12 }, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
+        }
       }
 
       if (annotation.type === "table") {
@@ -1499,7 +1689,11 @@ function App() {
       if (!result.canceled && result.filePath) setStatus(`Saved ${result.filePath}`);
       if (!result.canceled) {
         setIsDirty(false);
-        void window.pdfFillerDesktop?.setDirty(false);
+        setTabs((current) => {
+          const next = current.map((tab) => (tab.id === activeTabId ? { ...tab, isDirty: false } : tab));
+          void window.pdfFillerDesktop?.setDirty(next.some((tab) => tab.isDirty));
+          return next;
+        });
       }
       return;
     }
@@ -1542,7 +1736,7 @@ function App() {
         bytes: Array.from(bytes),
       });
       if (!result.canceled && result.filePath) setStatus(`Saved ${result.filePath}`);
-      return;
+      return result;
     }
     const outputBuffer = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(outputBuffer).set(bytes);
@@ -1553,6 +1747,7 @@ function App() {
     anchor.download = defaultName;
     anchor.click();
     URL.revokeObjectURL(url);
+    return { canceled: false };
   };
 
   const saveMultiplePdfFiles = async (files: Array<{ name: string; bytes: Uint8Array }>) => {
@@ -1610,7 +1805,23 @@ function App() {
     }
   };
 
-  const removePagesFromFile = async (file: File, pagesToRemove: number[]) => {
+  const extractPagesFromFile = async (file: File, pagesToExtract: number[]) => {
+    if (!pagesToExtract.length) {
+      setStatus("Select at least one page to extract.");
+      return;
+    }
+    setStatus("Extracting pages...");
+    const sourceBytes = await file.arrayBuffer();
+    const source = await PDFDocument.load(sourceBytes.slice(0));
+    const output = await PDFDocument.create();
+    const pages = await output.copyPages(source, pagesToExtract.map((page) => page - 1));
+    pages.forEach((page) => output.addPage(page));
+    await savePdfBytes(await output.save(), `${basePdfName(file.name)}-extracted-pages.pdf`);
+    setExtractPagesOpen(false);
+    setStatus(`Extracted ${pagesToExtract.length} page${pagesToExtract.length === 1 ? "" : "s"}.`);
+  };
+
+  const removePagesFromFile = async (file: File, pagesToRemove: number[], openAfterSave: boolean) => {
     setStatus("Removing pages...");
     const sourceBytes = await file.arrayBuffer();
     const source = await PDFDocument.load(sourceBytes.slice(0));
@@ -1624,9 +1835,12 @@ function App() {
     const output = await PDFDocument.create();
     const pages = await output.copyPages(source, keep);
     pages.forEach((page) => output.addPage(page));
-    await savePdfBytes(await output.save(), `${basePdfName(file.name)}-removed-pages.pdf`);
+    const result = await savePdfBytes(await output.save(), `${basePdfName(file.name)}-removed-pages.pdf`);
     setRemovePagesOpen(false);
     setStatus(`Removed ${pagesToRemove.length} page${pagesToRemove.length === 1 ? "" : "s"}.`);
+    if (openAfterSave && result && !result.canceled && result.filePath) {
+      await loadDesktopPdfPath(result.filePath);
+    }
   };
 
   const exportSelectedPages = async (indices: number[], defaultName: string) => {
@@ -1655,22 +1869,22 @@ function App() {
     const pages = await output.copyPages(source, keep);
     pages.forEach((page) => output.addPage(page));
     const bytes = await output.save();
-    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName);
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
     setAnnotations(nextAnnotations);
     setStatus(`Deleted page ${activePage}.`);
   };
 
-  const rotateActivePage = async () => {
+  const rotateActivePage = async (direction: -1 | 1 = 1) => {
     if (!pdfBytes) return;
     const pdf = await PDFDocument.load(pdfBytes.slice(0));
     const page = pdf.getPage(activePage - 1);
     const current = page.getRotation().angle;
-    page.setRotation(degrees((current + 90) % 360));
+    page.setRotation(degrees((current + direction * 90 + 360) % 360));
     const bytes = await pdf.save();
     const preservedAnnotations = annotations;
-    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName);
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
     setAnnotations(preservedAnnotations);
-    setStatus(`Rotated page ${activePage}.`);
+    setStatus(`Rotated page ${activePage} ${direction === 1 ? "right" : "left"}.`);
   };
 
   const addPageNumbers = () => {
@@ -1701,9 +1915,10 @@ function App() {
     if (item === "Print") void printPdf();
     if (item === "Merge PDFs") setMergeOpen(true);
     if (item === "Split PDF" || item === "Split") setSplitOpen(true);
-    if (item === "Extract PDF pages") void exportSelectedPages([activePage - 1], fileName.replace(/\.pdf$/i, `-page-${activePage}.pdf`));
+    if (item === "Extract PDF pages") setExtractPagesOpen(true);
     if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") setRemovePagesOpen(true);
-    if (item === "Rotate PDF" || item === "Rotate PDF pages" || item === "Organize Pages") void rotateActivePage();
+    if (item === "Rotate PDF" || item === "Rotate PDF pages") void rotateActivePage();
+    if (item === "Organize Pages") setStatus("Use Split, Extract, Delete, or the rotate buttons to organize pages.");
     if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
     if (item === "Add Text") setTool("text");
@@ -1797,6 +2012,38 @@ function App() {
           ))}
         </nav>
       </header>
+      <div className="documentTabs" aria-label="Open PDFs">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            className={tab.id === activeTabId ? "docTab active" : "docTab"}
+            onClick={() => activateTab(tab.id)}
+            title={tab.fileName}
+          >
+            <FileText size={14} />
+            <span>{tab.fileName}</span>
+            {tab.isDirty && <strong>*</strong>}
+            <em
+              role="button"
+              tabIndex={0}
+              onClick={(event) => {
+                event.stopPropagation();
+                closeTab(tab.id);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeTab(tab.id);
+                }
+              }}
+              title="Close tab"
+            >
+              x
+            </em>
+          </button>
+        ))}
+      </div>
       <main className="app">
       <aside className="rail" aria-label="Tools">
         <div className="brand">
@@ -1814,6 +2061,12 @@ function App() {
               <button
                 className={tool === id ? "tool active" : "tool"}
                 key={id}
+                onContextMenu={(event) => {
+                  if (!["draw", "eraser", "line", "arrow", "circle", "rectangle", "highlight", "whiteout"].includes(id)) return;
+                  event.preventDefault();
+                  setTool(id);
+                  setToolMenu({ tool: id, x: event.clientX, y: event.clientY });
+                }}
                 onClick={() => {
                   if (id === "watermark") {
                     addWatermark();
@@ -1831,6 +2084,30 @@ function App() {
             ))}
           </div>
         </div>
+        {toolMenu && (
+          <ToolContextMenu
+            menu={toolMenu}
+            drawColor={drawColor}
+            drawWidth={drawWidth}
+            eraserSize={eraserSize}
+            eraserOpacity={eraserOpacity}
+            shapeFillColor={shapeFillColor}
+            shapeStrokeColor={shapeStrokeColor}
+            shapeFillOpacity={shapeFillOpacity}
+            shapeStrokeOpacity={shapeStrokeOpacity}
+            shapeStrokeWidth={shapeStrokeWidth}
+            onClose={() => setToolMenu(null)}
+            onDrawColor={setDrawColor}
+            onDrawWidth={setDrawWidth}
+            onEraserSize={setEraserSize}
+            onEraserOpacity={setEraserOpacity}
+            onShapeFillColor={setShapeFillColor}
+            onShapeStrokeColor={setShapeStrokeColor}
+            onShapeFillOpacity={setShapeFillOpacity}
+            onShapeStrokeOpacity={setShapeStrokeOpacity}
+            onShapeStrokeWidth={setShapeStrokeWidth}
+          />
+        )}
 
         <div className="railDivider" />
         <button className="wideButton" onClick={() => document.getElementById("pdf-upload")?.click()}>
@@ -1909,9 +2186,17 @@ function App() {
             <span>{status}</span>
           </div>
           <div className="topActions">
-            <button onClick={importDetectedText} disabled={!textZones.length} title="Turn PDF text into editable overlays">
-              <Wand2 size={17} />
-              Detect text
+            <button onClick={() => rotateActivePage(-1)} disabled={!pdfBytes} title="Rotate page left">
+              <RotateCcw size={17} />
+            </button>
+            <button onClick={() => rotateActivePage(1)} disabled={!pdfBytes} title="Rotate page right">
+              <RotateCw size={17} />
+            </button>
+            <button onClick={undo} disabled={!historyRef.current.length} title="Undo">
+              <Undo2 size={17} />
+            </button>
+            <button onClick={redo} disabled={!redoRef.current.length} title="Redo">
+              <Redo2 size={17} />
             </button>
             <button onClick={() => setZoom((value) => clamp(value - 0.1, 0.45, 2.5))} title="Zoom out">
               <ZoomOut size={17} />
@@ -1919,9 +2204,6 @@ function App() {
             <span>{Math.round(zoom * 100)}%</span>
             <button onClick={() => setZoom((value) => clamp(value + 0.1, 0.45, 2.5))} title="Zoom in">
               <ZoomIn size={17} />
-            </button>
-            <button onClick={() => setAnnotations([])} disabled={!annotations.length} title="Clear all">
-              <RotateCcw size={17} />
             </button>
           </div>
         </header>
@@ -1964,6 +2246,9 @@ function App() {
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
                 placementPreview={placementPreview?.page === index + 1 ? placementPreview : null}
                 imagePlacementPreview={imagePlacementPreview?.page === index + 1 ? imagePlacementPreview : null}
+                eraserPreview={eraserPreview?.page === index + 1 ? eraserPreview : null}
+                eraserSize={eraserSize}
+                eraserOpacity={eraserOpacity}
                 onPageRef={(node) => {
                   pageRefs.current[index + 1] = node;
                 }}
@@ -2134,17 +2419,6 @@ function App() {
           </section>
         )}
 
-        <section>
-          <h2>All tools</h2>
-          <div className="featureList">
-            {featureGroups.map((group) => (
-              <div key={group.title} className="featureGroup">
-                <strong>{group.title}</strong>
-                {group.items.map((item) => <span key={item}>{item}</span>)}
-              </div>
-            ))}
-          </div>
-        </section>
       </aside>
 
       {signatureModal && (
@@ -2175,7 +2449,13 @@ function App() {
       {removePagesOpen && (
         <RemovePagesModal
           onClose={() => setRemovePagesOpen(false)}
-          onRemove={(file, pages) => void removePagesFromFile(file, pages)}
+          onRemove={(file, pages, openAfterSave) => void removePagesFromFile(file, pages, openAfterSave)}
+        />
+      )}
+      {extractPagesOpen && (
+        <ExtractPagesModal
+          onClose={() => setExtractPagesOpen(false)}
+          onExtract={(file, pages) => void extractPagesFromFile(file, pages)}
         />
       )}
       {isDesktop && showUpdateGate && (
@@ -2261,6 +2541,9 @@ function PdfPage({
   draftBox,
   placementPreview,
   imagePlacementPreview,
+  eraserPreview,
+  eraserSize,
+  eraserOpacity,
   onPageRef,
   onPointerDown,
   onPointerMove,
@@ -2288,6 +2571,9 @@ function PdfPage({
   draftBox: DraftBox | null;
   placementPreview: { page: number; x: number; y: number; tool: Tool } | null;
   imagePlacementPreview: { page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null;
+  eraserPreview: { page: number; x: number; y: number } | null;
+  eraserSize: number;
+  eraserOpacity: number;
   onPageRef: (node: HTMLElement | null) => void;
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -2391,6 +2677,18 @@ function PdfPage({
                 top: `${(imagePlacementPreview.y - imagePlacementPreview.h / 2) * 100}%`,
                 width: `${imagePlacementPreview.w * 100}%`,
                 height: `${imagePlacementPreview.h * 100}%`,
+              }}
+            />
+          )}
+          {eraserPreview && (
+            <div
+              className="eraserPreview"
+              style={{
+                left: eraserPreview.x * displayWidth - eraserSize / 2,
+                top: eraserPreview.y * displayHeight - eraserSize / 2,
+                width: eraserSize,
+                height: eraserSize,
+                opacity: eraserOpacity,
               }}
             />
           )}
@@ -2536,7 +2834,7 @@ function AnnotationView({
           {annotation.type === "radio" ? (annotation.checked ? "o" : "") : annotation.checked ? (annotation.mark === "check" ? "✓" : "X") : ""}
         </span>
       )}
-      {annotation.type === "arrow" && <ArrowOverlay color={annotation.color} width={annotation.width} />}
+      {(annotation.type === "arrow" || annotation.type === "line") && <ArrowOverlay color={annotation.color} width={annotation.width} arrow={annotation.type === "arrow"} />}
       {annotation.type === "table" && (
         <TableOverlay
           rows={annotation.rows}
@@ -2561,11 +2859,11 @@ function AnnotationView({
   );
 }
 
-function ArrowOverlay({ color, width }: { color: string; width: number }) {
+function ArrowOverlay({ color, width, arrow = true }: { color: string; width: number; arrow?: boolean }) {
   return (
     <svg className="shapeOverlay" viewBox="0 0 100 40" preserveAspectRatio="none">
       <line x1="4" y1="34" x2="92" y2="6" stroke={color} strokeWidth={width} />
-      <polyline points="78,4 92,6 83,18" fill="none" stroke={color} strokeWidth={width} />
+      {arrow && <polyline points="78,4 92,6 83,18" fill="none" stroke={color} strokeWidth={width} />}
     </svg>
   );
 }
@@ -2723,6 +3021,92 @@ function ColorRow({ value, onChange }: { value: string; onChange: (value: string
         <button key={color} className={value === color ? "swatch active" : "swatch"} style={{ background: color }} onClick={() => onChange(color)} title={color} />
       ))}
       <input type="color" value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
+function ToolContextMenu({
+  menu,
+  drawColor,
+  drawWidth,
+  eraserSize,
+  eraserOpacity,
+  shapeFillColor,
+  shapeStrokeColor,
+  shapeFillOpacity,
+  shapeStrokeOpacity,
+  shapeStrokeWidth,
+  onClose,
+  onDrawColor,
+  onDrawWidth,
+  onEraserSize,
+  onEraserOpacity,
+  onShapeFillColor,
+  onShapeStrokeColor,
+  onShapeFillOpacity,
+  onShapeStrokeOpacity,
+  onShapeStrokeWidth,
+}: {
+  menu: { tool: Tool; x: number; y: number };
+  drawColor: string;
+  drawWidth: number;
+  eraserSize: number;
+  eraserOpacity: number;
+  shapeFillColor: string;
+  shapeStrokeColor: string;
+  shapeFillOpacity: number;
+  shapeStrokeOpacity: number;
+  shapeStrokeWidth: number;
+  onClose: () => void;
+  onDrawColor: (value: string) => void;
+  onDrawWidth: (value: number) => void;
+  onEraserSize: (value: number) => void;
+  onEraserOpacity: (value: number) => void;
+  onShapeFillColor: (value: string) => void;
+  onShapeStrokeColor: (value: string) => void;
+  onShapeFillOpacity: (value: number) => void;
+  onShapeStrokeOpacity: (value: number) => void;
+  onShapeStrokeWidth: (value: number) => void;
+}) {
+  const isDraw = menu.tool === "draw";
+  const isEraser = menu.tool === "eraser";
+
+  return (
+    <div className="toolContextMenu" style={{ left: menu.x, top: menu.y }} onContextMenu={(event) => event.preventDefault()}>
+      <header>
+        <strong>{menu.tool === "draw" ? "Pencil" : menu.tool === "eraser" ? "Eraser" : "Shape"} options</strong>
+        <button onClick={onClose}>x</button>
+      </header>
+      {isDraw && (
+        <>
+          <label>Color</label>
+          <ColorRow value={drawColor} onChange={onDrawColor} />
+          <label>Width</label>
+          <input type="range" min="1" max="18" value={drawWidth} onChange={(event) => onDrawWidth(Number(event.target.value))} />
+        </>
+      )}
+      {isEraser && (
+        <>
+          <label>Size</label>
+          <input type="range" min="8" max="90" value={eraserSize} onChange={(event) => onEraserSize(Number(event.target.value))} />
+          <label>Preview opacity</label>
+          <input type="range" min="0.08" max="0.55" step="0.01" value={eraserOpacity} onChange={(event) => onEraserOpacity(Number(event.target.value))} />
+        </>
+      )}
+      {!isDraw && !isEraser && (
+        <>
+          <label>Fill color</label>
+          <ColorRow value={shapeFillColor} onChange={onShapeFillColor} />
+          <label>Fill opacity</label>
+          <input type="range" min="0" max="1" step="0.05" value={shapeFillOpacity} onChange={(event) => onShapeFillOpacity(Number(event.target.value))} />
+          <label>Outline color</label>
+          <ColorRow value={shapeStrokeColor} onChange={onShapeStrokeColor} />
+          <label>Outline opacity</label>
+          <input type="range" min="0" max="1" step="0.05" value={shapeStrokeOpacity} onChange={(event) => onShapeStrokeOpacity(Number(event.target.value))} />
+          <label>Outline width</label>
+          <input type="range" min="1" max="12" value={shapeStrokeWidth} onChange={(event) => onShapeStrokeWidth(Number(event.target.value))} />
+        </>
+      )}
     </div>
   );
 }
@@ -2965,7 +3349,7 @@ function SplitPdfModal({ onClose, onSplit }: { onClose: () => void; onSplit: (fi
   );
 }
 
-function RemovePagesModal({ onClose, onRemove }: { onClose: () => void; onRemove: (file: File, pages: number[]) => void }) {
+function ExtractPagesModal({ onClose, onExtract }: { onClose: () => void; onExtract: (file: File, pages: number[]) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [doc, setDoc] = useState<any>(null);
   const [pageCount, setPageCount] = useState(0);
@@ -3020,12 +3404,123 @@ function RemovePagesModal({ onClose, onRemove }: { onClose: () => void; onRemove
       <div className="toolWorkflowModal">
         <header>
           <div>
+            <h2>Extract PDF pages</h2>
+            <p className="muted">Choose the pages to save into a separate PDF.</p>
+          </div>
+          <div className="modalActions">
+            <button onClick={onClose}>Cancel</button>
+            <button className="primaryAction" disabled={!file || selected.length === 0} onClick={() => file && onExtract(file, selected)}>
+              Extract pages
+            </button>
+          </div>
+        </header>
+
+        <input ref={inputRef} hidden type="file" accept="application/pdf" onChange={(event) => void loadFile(event.target.files?.[0] ?? null)} />
+
+        {!file && (
+          <div className="fileDropPanel">
+            <FilePlus2 size={44} />
+            <button className="primaryAction" onClick={() => inputRef.current?.click()}>Select PDF file</button>
+            <span>Choose a PDF to extract pages from</span>
+          </div>
+        )}
+
+        {file && doc && (
+          <div className="toolWorkflowGrid">
+            <section className="toolPreviewArea">
+              <div className="workflowTitleRow">
+                <strong>{file.name}</strong>
+                <button className="wideButton" onClick={() => inputRef.current?.click()}>Choose different PDF</button>
+              </div>
+              <div className="removePageGrid">
+                {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => (
+                  <ToolPdfThumbnail key={page} doc={doc} page={page} selected={selectedPages.has(page)} onClick={() => togglePage(page)} />
+                ))}
+              </div>
+            </section>
+
+            <aside className="toolSidePanel">
+              <h3>Extract pages</h3>
+              <div className="infoPanel compact">Click the pages you want in the new PDF.</div>
+              <p className="toolMeta">Total pages: {pageCount}</p>
+              <label className="fieldStack">
+                <span>Pages to extract</span>
+                <input value={rangeInput} onChange={(event) => setRangeInput(event.target.value)} placeholder="example: 1-3,8" />
+              </label>
+              <button className="wideButton" onClick={applyRange}>Use range</button>
+              <button className="wideButton" onClick={() => setSelectedPages(new Set())}>Clear selection</button>
+              <p className="toolMeta">{selected.length ? `${selected.length} selected: ${selected.join(", ")}` : "No pages selected."}</p>
+              {error && <p className="errorText">{error}</p>}
+            </aside>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RemovePagesModal({ onClose, onRemove }: { onClose: () => void; onRemove: (file: File, pages: number[], openAfterSave: boolean) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [doc, setDoc] = useState<any>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set());
+  const [rangeInput, setRangeInput] = useState("");
+  const [openAfterSave, setOpenAfterSave] = useState(true);
+  const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.click();
+  }, []);
+
+  const loadFile = async (nextFile: File | null) => {
+    setError("");
+    setFile(nextFile);
+    setDoc(null);
+    setPageCount(0);
+    setSelectedPages(new Set());
+    setRangeInput("");
+    if (!nextFile) return;
+    try {
+      const pdf = await getDocument({ data: (await nextFile.arrayBuffer()).slice(0) }).promise;
+      setDoc(pdf);
+      setPageCount(pdf.numPages);
+    } catch {
+      setError("That PDF could not be opened.");
+    }
+  };
+
+  const togglePage = (page: number) => {
+    setSelectedPages((current) => {
+      const next = new Set(current);
+      if (next.has(page)) next.delete(page);
+      else next.add(page);
+      return next;
+    });
+  };
+
+  const applyRange = () => {
+    try {
+      setSelectedPages(pageNumbersFromRangeInput(rangeInput, pageCount));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Check your page range.");
+    }
+  };
+
+  const selected = Array.from(selectedPages).sort((a, b) => a - b);
+
+  return (
+    <div className="modalBackdrop" role="dialog" aria-modal="true">
+      <div className="toolWorkflowModal">
+        <header>
+          <div>
             <h2>Remove PDF pages</h2>
             <p className="muted">Select pages visually or enter a range such as 1-3,8.</p>
           </div>
           <div className="modalActions">
             <button onClick={onClose}>Cancel</button>
-            <button className="primaryAction dangerAction" disabled={!file || selected.length === 0 || selected.length >= pageCount} onClick={() => file && onRemove(file, selected)}>
+            <button className="primaryAction dangerAction" disabled={!file || selected.length === 0 || selected.length >= pageCount} onClick={() => file && onRemove(file, selected, openAfterSave)}>
               Remove pages
             </button>
           </div>
@@ -3065,6 +3560,10 @@ function RemovePagesModal({ onClose, onRemove }: { onClose: () => void; onRemove
               </label>
               <button className="wideButton" onClick={applyRange}>Use range</button>
               <button className="wideButton" onClick={() => setSelectedPages(new Set())}>Clear selection</button>
+              <label className="checkRow">
+                <input type="checkbox" checked={openAfterSave} onChange={(event) => setOpenAfterSave(event.target.checked)} />
+                Open saved PDF afterwards
+              </label>
               <p className="toolMeta">{selected.length ? `${selected.length} selected: ${selected.join(", ")}` : "No pages selected."}</p>
               {selected.length >= pageCount && <p className="errorText">At least one page must remain.</p>}
               {error && <p className="errorText">{error}</p>}
