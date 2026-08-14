@@ -24,6 +24,7 @@ interface Window {
     setStartupEnabled: (enabled: boolean) => Promise<boolean>;
     openDefaultAppSettings: () => Promise<void>;
     savePdfFile: (payload: { defaultName: string; bytes: number[] }) => Promise<{ canceled: boolean; filePath?: string }>;
+    savePdfFiles: (payload: { title: string; files: Array<{ name: string; bytes: number[] }> }) => Promise<{ canceled: boolean; folder?: string; saved?: string[] }>;
     printPdfFile: (payload: { defaultName: string; bytes: number[] }) => Promise<{ ok: boolean; reason?: string }>;
     print: () => Promise<boolean>;
     getUpdateSettings: () => Promise<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string; status: string; updateState: DesktopUpdateState }>;

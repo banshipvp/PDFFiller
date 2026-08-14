@@ -267,6 +267,23 @@ ipcMain.handle("desktop:save-pdf-file", async (_event, payload) => {
   return { canceled: false, filePath: result.filePath };
 });
 
+ipcMain.handle("desktop:save-pdf-files", async (_event, payload) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: payload.title || "Choose output folder",
+    properties: ["openDirectory", "createDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return { canceled: true };
+  const folder = result.filePaths[0];
+  const saved = [];
+  for (const file of payload.files || []) {
+    const safeName = path.basename(file.name || "output.pdf").replace(/[<>:"/\\|?*]/g, "_");
+    const filePath = path.join(folder, safeName.endsWith(".pdf") ? safeName : `${safeName}.pdf`);
+    await fs.writeFile(filePath, Buffer.from(file.bytes));
+    saved.push(filePath);
+  }
+  return { canceled: false, folder, saved };
+});
+
 ipcMain.handle("desktop:print-pdf-file", async (_event, payload) => {
   if (!mainWindow) return { ok: false, reason: "No application window is available." };
 

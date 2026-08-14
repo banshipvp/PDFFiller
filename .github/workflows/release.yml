@@ -1,4 +1,4 @@
-name: Build Windows Release
+name: Build Desktop Release
 
 on:
   push:
@@ -36,3 +36,33 @@ jobs:
             desktop-release/*.exe
             desktop-release/*.blockmap
             desktop-release/latest.yml
+
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx electron-builder --mac dmg zip --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PDF-Filler-Mac-${{ github.ref_name }}
+          path: |
+            desktop-release/*.dmg
+            desktop-release/*.zip
+            desktop-release/*.blockmap
+            desktop-release/latest-mac.yml
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            desktop-release/*.dmg
+            desktop-release/*.zip
+            desktop-release/*.blockmap
+            desktop-release/latest-mac.yml

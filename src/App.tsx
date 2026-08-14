@@ -185,6 +185,11 @@ type LineZone = BaseAnnotation & {
   source: "line";
 };
 
+type PageRange = {
+  start: number;
+  end: number;
+};
+
 const palette = {
   ink: "#111827",
   blue: "#2563eb",
@@ -280,6 +285,54 @@ function hexToRgb(hex: string) {
 function hexToRgba(hex: string, opacity: number) {
   const { r, g, b } = hexToRgb(hex);
   return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${opacity})`;
+}
+
+function basePdfName(name: string) {
+  return name.replace(/\.pdf$/i, "") || "document";
+}
+
+function pageNumbersFromRangeInput(input: string, total: number) {
+  const pages = new Set<number>();
+  const parts = input.split(",").map((part) => part.trim()).filter(Boolean);
+  for (const part of parts) {
+    const match = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!match) throw new Error(`Use page numbers like 1,3-5.`);
+    const start = Number(match[1]);
+    const end = Number(match[2] ?? match[1]);
+    if (start < 1 || end < 1 || start > total || end > total || start > end) {
+      throw new Error(`Pages must be between 1 and ${total}.`);
+    }
+    for (let page = start; page <= end; page += 1) pages.add(page);
+  }
+  return pages;
+}
+
+function rangesFromInput(input: string, total: number): PageRange[] {
+  const ranges = input.split(",").map((part) => part.trim()).filter(Boolean).map((part) => {
+    const match = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!match) throw new Error(`Use ranges like 1-3,4-6.`);
+    const start = Number(match[1]);
+    const end = Number(match[2] ?? match[1]);
+    if (start < 1 || end < 1 || start > total || end > total || start > end) {
+      throw new Error(`Ranges must stay between 1 and ${total}.`);
+    }
+    return { start, end };
+  });
+  if (!ranges.length) throw new Error("Add at least one page range.");
+  return ranges;
+}
+
+function fixedRanges(total: number, size: number): PageRange[] {
+  const chunkSize = clamp(Math.floor(size) || 1, 1, total);
+  const ranges: PageRange[] = [];
+  for (let start = 1; start <= total; start += chunkSize) {
+    ranges.push({ start, end: Math.min(total, start + chunkSize - 1) });
+  }
+  return ranges;
+}
+
+function pageRangeIndices(range: PageRange) {
+  return Array.from({ length: range.end - range.start + 1 }, (_, index) => range.start - 1 + index);
 }
 
 function isTextAnnotation(annotation: Annotation): annotation is TextAnnotation {
@@ -480,6 +533,8 @@ function App() {
   const [status, setStatus] = useState("Ready");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [removePagesOpen, setRemovePagesOpen] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
   const [imagePlacementPreview, setImagePlacementPreview] = useState<{ page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null>(null);
@@ -1500,6 +1555,22 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const saveMultiplePdfFiles = async (files: Array<{ name: string; bytes: Uint8Array }>) => {
+    if (!files.length) return { canceled: true };
+    if (window.pdfFillerDesktop) {
+      const result = await window.pdfFillerDesktop.savePdfFiles({
+        title: "Choose folder for split PDFs",
+        files: files.map((file) => ({ name: file.name, bytes: Array.from(file.bytes) })),
+      });
+      if (!result.canceled && result.folder) setStatus(`Saved ${files.length} PDFs to ${result.folder}`);
+      return result;
+    }
+    for (const file of files) {
+      await savePdfBytes(file.bytes, file.name);
+    }
+    return { canceled: false };
+  };
+
   const mergePdfFiles = async (files: File[]) => {
     if (files.length < 2) {
       setStatus("Choose at least two PDFs to merge.");
@@ -1517,6 +1588,47 @@ function App() {
     setStatus(`Merged ${files.length} PDFs.`);
   };
 
+  const splitPdfFile = async (file: File, ranges: PageRange[]) => {
+    setStatus("Splitting PDF...");
+    const sourceBytes = await file.arrayBuffer();
+    const source = await PDFDocument.load(sourceBytes.slice(0));
+    const baseName = basePdfName(file.name);
+    const outputs: Array<{ name: string; bytes: Uint8Array }> = [];
+    for (const [index, range] of ranges.entries()) {
+      const output = await PDFDocument.create();
+      const pages = await output.copyPages(source, pageRangeIndices(range));
+      pages.forEach((page) => output.addPage(page));
+      outputs.push({
+        name: `${baseName}-split-${index + 1}-p${range.start}${range.end === range.start ? "" : `-${range.end}`}.pdf`,
+        bytes: await output.save(),
+      });
+    }
+    const result = await saveMultiplePdfFiles(outputs);
+    if (!result.canceled) {
+      setSplitOpen(false);
+      setStatus(`Created ${outputs.length} split PDF${outputs.length === 1 ? "" : "s"}.`);
+    }
+  };
+
+  const removePagesFromFile = async (file: File, pagesToRemove: number[]) => {
+    setStatus("Removing pages...");
+    const sourceBytes = await file.arrayBuffer();
+    const source = await PDFDocument.load(sourceBytes.slice(0));
+    const total = source.getPageCount();
+    const removeSet = new Set(pagesToRemove);
+    const keep = Array.from({ length: total }, (_, index) => index).filter((index) => !removeSet.has(index + 1));
+    if (!keep.length) {
+      setStatus("At least one page must remain.");
+      return;
+    }
+    const output = await PDFDocument.create();
+    const pages = await output.copyPages(source, keep);
+    pages.forEach((page) => output.addPage(page));
+    await savePdfBytes(await output.save(), `${basePdfName(file.name)}-removed-pages.pdf`);
+    setRemovePagesOpen(false);
+    setStatus(`Removed ${pagesToRemove.length} page${pagesToRemove.length === 1 ? "" : "s"}.`);
+  };
+
   const exportSelectedPages = async (indices: number[], defaultName: string) => {
     if (!pdfBytes) {
       setStatus("Open a PDF before using this tool.");
@@ -1527,18 +1639,6 @@ function App() {
     const pages = await output.copyPages(source, indices);
     pages.forEach((page) => output.addPage(page));
     await savePdfBytes(await output.save(), defaultName);
-  };
-
-  const splitPdf = async () => {
-    if (!pdfBytes || !pageSizes.length) {
-      setStatus("Open a PDF before splitting it.");
-      return;
-    }
-    setStatus(`Splitting ${pageSizes.length} pages...`);
-    for (let index = 0; index < pageSizes.length; index += 1) {
-      await exportSelectedPages([index], fileName.replace(/\.pdf$/i, `-page-${index + 1}.pdf`));
-    }
-    setStatus(`Split ${pageSizes.length} pages.`);
   };
 
   const deleteActivePage = async () => {
@@ -1600,9 +1700,9 @@ function App() {
     if (item === "Save") void savePdf();
     if (item === "Print") void printPdf();
     if (item === "Merge PDFs") setMergeOpen(true);
-    if (item === "Split PDF") void splitPdf();
+    if (item === "Split PDF" || item === "Split") setSplitOpen(true);
     if (item === "Extract PDF pages") void exportSelectedPages([activePage - 1], fileName.replace(/\.pdf$/i, `-page-${activePage}.pdf`));
-    if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") void deleteActivePage();
+    if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") setRemovePagesOpen(true);
     if (item === "Rotate PDF" || item === "Rotate PDF pages" || item === "Organize Pages") void rotateActivePage();
     if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
@@ -2064,6 +2164,18 @@ function App() {
         <MergeModal
           onClose={() => setMergeOpen(false)}
           onMerge={(files) => void mergePdfFiles(files)}
+        />
+      )}
+      {splitOpen && (
+        <SplitPdfModal
+          onClose={() => setSplitOpen(false)}
+          onSplit={(file, ranges) => void splitPdfFile(file, ranges)}
+        />
+      )}
+      {removePagesOpen && (
+        <RemovePagesModal
+          onClose={() => setRemovePagesOpen(false)}
+          onRemove={(file, pages) => void removePagesFromFile(file, pages)}
         />
       )}
       {isDesktop && showUpdateGate && (
@@ -2699,6 +2811,266 @@ function MergeModal({ onClose, onMerge }: { onClose: () => void; onMerge: (files
           ))}
           {!files.length && <p className="muted">Choose two or more PDFs.</p>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ToolPdfThumbnail({ doc, page, selected, onClick }: { doc: any; page: number; selected?: boolean; onClick?: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const render = async () => {
+      const pdfPage = await doc.getPage(page);
+      const viewport = pdfPage.getViewport({ scale: 1 });
+      const scale = 118 / viewport.width;
+      const scaled = pdfPage.getViewport({ scale });
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d");
+      if (!canvas || !context || cancelled) return;
+      canvas.width = scaled.width;
+      canvas.height = scaled.height;
+      await pdfPage.render({ canvasContext: context, viewport: scaled, background: "#ffffff" }).promise;
+    };
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, page]);
+
+  return (
+    <button className={selected ? "toolPageThumb selected" : "toolPageThumb"} onClick={onClick} type="button">
+      <canvas ref={canvasRef} />
+      <span>Page {page}</span>
+    </button>
+  );
+}
+
+function SplitPdfModal({ onClose, onSplit }: { onClose: () => void; onSplit: (file: File, ranges: PageRange[]) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [doc, setDoc] = useState<any>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const [mode, setMode] = useState<"fixed" | "custom">("fixed");
+  const [fixedSize, setFixedSize] = useState(1);
+  const [customInput, setCustomInput] = useState("");
+  const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.click();
+  }, []);
+
+  const loadFile = async (nextFile: File | null) => {
+    setError("");
+    setFile(nextFile);
+    setDoc(null);
+    setPageCount(0);
+    if (!nextFile) return;
+    try {
+      const pdf = await getDocument({ data: (await nextFile.arrayBuffer()).slice(0) }).promise;
+      setDoc(pdf);
+      setPageCount(pdf.numPages);
+      setFixedSize(1);
+      setCustomInput(`1-${pdf.numPages}`);
+    } catch {
+      setError("That PDF could not be opened.");
+    }
+  };
+
+  const splitPlan = useMemo(() => {
+    if (!pageCount) return { ranges: [], error: "" };
+    try {
+      return { ranges: mode === "fixed" ? fixedRanges(pageCount, fixedSize) : rangesFromInput(customInput, pageCount), error: "" };
+    } catch (err) {
+      return { ranges: [], error: err instanceof Error ? err.message : "Check your ranges." };
+    }
+  }, [customInput, fixedSize, mode, pageCount]);
+  const ranges = splitPlan.ranges;
+
+  return (
+    <div className="modalBackdrop" role="dialog" aria-modal="true">
+      <div className="toolWorkflowModal">
+        <header>
+          <div>
+            <h2>Split PDF file</h2>
+            <p className="muted">Separate one PDF into independent files using fixed page chunks or custom ranges.</p>
+          </div>
+          <div className="modalActions">
+            <button onClick={onClose}>Cancel</button>
+            <button className="primaryAction" disabled={!file || !ranges.length} onClick={() => file && onSplit(file, ranges)}>
+              Split PDF
+            </button>
+          </div>
+        </header>
+
+        <input ref={inputRef} hidden type="file" accept="application/pdf" onChange={(event) => void loadFile(event.target.files?.[0] ?? null)} />
+
+        {!file && (
+          <div className="fileDropPanel">
+            <Scissors size={44} />
+            <button className="primaryAction" onClick={() => inputRef.current?.click()}>Select PDF file</button>
+            <span>Choose a PDF to split</span>
+          </div>
+        )}
+
+        {file && doc && (
+          <div className="toolWorkflowGrid">
+            <section className="toolPreviewArea">
+              <div className="workflowTitleRow">
+                <strong>{file.name}</strong>
+                <button className="wideButton" onClick={() => inputRef.current?.click()}>Choose different PDF</button>
+              </div>
+              <div className="splitRangePreview">
+                {ranges.map((range, index) => (
+                  <div className="rangeGroup" key={`${range.start}-${range.end}-${index}`}>
+                    <strong>Range {index + 1}</strong>
+                    <div className="rangeThumbs">
+                      <ToolPdfThumbnail doc={doc} page={range.start} />
+                      {range.end !== range.start && <span className="rangeDots">...</span>}
+                      {range.end !== range.start && <ToolPdfThumbnail doc={doc} page={range.end} />}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <aside className="toolSidePanel">
+              <h3>Split</h3>
+              <div className="segmented">
+                <button className={mode === "custom" ? "active" : ""} onClick={() => setMode("custom")}>Custom</button>
+                <button className={mode === "fixed" ? "active" : ""} onClick={() => setMode("fixed")}>Fixed</button>
+              </div>
+              {mode === "fixed" ? (
+                <label className="fieldStack">
+                  <span>Split into page ranges of</span>
+                  <input min={1} max={pageCount} type="number" value={fixedSize} onChange={(event) => setFixedSize(clamp(Number(event.target.value) || 1, 1, pageCount))} />
+                </label>
+              ) : (
+                <label className="fieldStack">
+                  <span>Custom ranges</span>
+                  <input value={customInput} onChange={(event) => setCustomInput(event.target.value)} placeholder="example: 1-3,4-6" />
+                </label>
+              )}
+              <div className="infoPanel">
+                This PDF will be split into files of {mode === "fixed" ? `${fixedSize} page${fixedSize === 1 ? "" : "s"}` : "your selected ranges"}.
+                <strong>{ranges.length} PDF{ranges.length === 1 ? "" : "s"} will be created.</strong>
+              </div>
+              {(error || splitPlan.error) && <p className="errorText">{error || splitPlan.error}</p>}
+            </aside>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RemovePagesModal({ onClose, onRemove }: { onClose: () => void; onRemove: (file: File, pages: number[]) => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [doc, setDoc] = useState<any>(null);
+  const [pageCount, setPageCount] = useState(0);
+  const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set());
+  const [rangeInput, setRangeInput] = useState("");
+  const [error, setError] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.click();
+  }, []);
+
+  const loadFile = async (nextFile: File | null) => {
+    setError("");
+    setFile(nextFile);
+    setDoc(null);
+    setPageCount(0);
+    setSelectedPages(new Set());
+    setRangeInput("");
+    if (!nextFile) return;
+    try {
+      const pdf = await getDocument({ data: (await nextFile.arrayBuffer()).slice(0) }).promise;
+      setDoc(pdf);
+      setPageCount(pdf.numPages);
+    } catch {
+      setError("That PDF could not be opened.");
+    }
+  };
+
+  const togglePage = (page: number) => {
+    setSelectedPages((current) => {
+      const next = new Set(current);
+      if (next.has(page)) next.delete(page);
+      else next.add(page);
+      return next;
+    });
+  };
+
+  const applyRange = () => {
+    try {
+      setSelectedPages(pageNumbersFromRangeInput(rangeInput, pageCount));
+      setError("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Check your page range.");
+    }
+  };
+
+  const selected = Array.from(selectedPages).sort((a, b) => a - b);
+
+  return (
+    <div className="modalBackdrop" role="dialog" aria-modal="true">
+      <div className="toolWorkflowModal">
+        <header>
+          <div>
+            <h2>Remove PDF pages</h2>
+            <p className="muted">Select pages visually or enter a range such as 1-3,8.</p>
+          </div>
+          <div className="modalActions">
+            <button onClick={onClose}>Cancel</button>
+            <button className="primaryAction dangerAction" disabled={!file || selected.length === 0 || selected.length >= pageCount} onClick={() => file && onRemove(file, selected)}>
+              Remove pages
+            </button>
+          </div>
+        </header>
+
+        <input ref={inputRef} hidden type="file" accept="application/pdf" onChange={(event) => void loadFile(event.target.files?.[0] ?? null)} />
+
+        {!file && (
+          <div className="fileDropPanel">
+            <Trash2 size={44} />
+            <button className="primaryAction" onClick={() => inputRef.current?.click()}>Select PDF file</button>
+            <span>Choose a PDF to edit</span>
+          </div>
+        )}
+
+        {file && doc && (
+          <div className="toolWorkflowGrid">
+            <section className="toolPreviewArea">
+              <div className="workflowTitleRow">
+                <strong>{file.name}</strong>
+                <button className="wideButton" onClick={() => inputRef.current?.click()}>Choose different PDF</button>
+              </div>
+              <div className="removePageGrid">
+                {Array.from({ length: pageCount }, (_, index) => index + 1).map((page) => (
+                  <ToolPdfThumbnail key={page} doc={doc} page={page} selected={selectedPages.has(page)} onClick={() => togglePage(page)} />
+                ))}
+              </div>
+            </section>
+
+            <aside className="toolSidePanel">
+              <h3>Remove pages</h3>
+              <div className="infoPanel compact">Click pages to remove them from the document.</div>
+              <p className="toolMeta">Total pages: {pageCount}</p>
+              <label className="fieldStack">
+                <span>Pages to remove</span>
+                <input value={rangeInput} onChange={(event) => setRangeInput(event.target.value)} placeholder="example: 1-3,8" />
+              </label>
+              <button className="wideButton" onClick={applyRange}>Use range</button>
+              <button className="wideButton" onClick={() => setSelectedPages(new Set())}>Clear selection</button>
+              <p className="toolMeta">{selected.length ? `${selected.length} selected: ${selected.join(", ")}` : "No pages selected."}</p>
+              {selected.length >= pageCount && <p className="errorText">At least one page must remain.</p>}
+              {error && <p className="errorText">{error}</p>}
+            </aside>
+          </div>
+        )}
       </div>
     </div>
   );
