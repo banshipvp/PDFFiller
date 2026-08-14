@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("pdfFillerDesktop", {
   setStartupEnabled: (enabled) => ipcRenderer.invoke("desktop:set-startup-enabled", enabled),
   openDefaultAppSettings: () => ipcRenderer.invoke("desktop:open-default-app-settings"),
   savePdfFile: (payload) => ipcRenderer.invoke("desktop:save-pdf-file", payload),
+  printPdfFile: (payload) => ipcRenderer.invoke("desktop:print-pdf-file", payload),
   print: () => ipcRenderer.invoke("desktop:print"),
   getUpdateSettings: () => ipcRenderer.invoke("desktop:get-update-settings"),
   setUpdateSettings: (settings) => ipcRenderer.invoke("desktop:set-update-settings", settings),

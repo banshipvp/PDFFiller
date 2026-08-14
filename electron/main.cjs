@@ -2,6 +2,7 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron")
 const { autoUpdater } = require("electron-updater");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const isDev = process.env.PDF_FILLER_DEV === "1";
 let mainWindow = null;
@@ -264,6 +265,70 @@ ipcMain.handle("desktop:save-pdf-file", async (_event, payload) => {
   if (result.canceled || !result.filePath) return { canceled: true };
   await fs.writeFile(result.filePath, Buffer.from(payload.bytes));
   return { canceled: false, filePath: result.filePath };
+});
+
+ipcMain.handle("desktop:print-pdf-file", async (_event, payload) => {
+  if (!mainWindow) return { ok: false, reason: "No application window is available." };
+
+  const tempDir = path.join(app.getPath("temp"), "pdf-filler-print");
+  const tempPath = path.join(tempDir, `pdf-filler-${Date.now()}.pdf`);
+  await fs.mkdir(tempDir, { recursive: true });
+  await fs.writeFile(tempPath, Buffer.from(payload.bytes));
+
+  const printWindow = new BrowserWindow({
+    show: false,
+    width: 900,
+    height: 1200,
+    title: "Print PDF",
+    parent: mainWindow,
+    backgroundColor: "#ffffff",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      plugins: true,
+    },
+  });
+  printWindow.setMenu(null);
+
+  const cleanup = async () => {
+    if (!printWindow.isDestroyed()) printWindow.destroy();
+    try {
+      await fs.unlink(tempPath);
+    } catch {
+      // The temporary file may still be held by the print spooler; Windows will clear temp files later.
+    }
+  };
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      setTimeout(() => {
+        void cleanup();
+      }, 1500);
+      resolve(result);
+    };
+
+    printWindow.on("closed", () => finish({ ok: false, reason: "Print window was closed." }));
+    printWindow.webContents.once("did-fail-load", (_event, _code, description) => {
+      finish({ ok: false, reason: `Could not load the PDF for printing: ${description}` });
+    });
+    printWindow.webContents.once("did-finish-load", () => {
+      setTimeout(() => {
+        if (printWindow.isDestroyed()) {
+          finish({ ok: false, reason: "Print window was closed." });
+          return;
+        }
+        printWindow.webContents.print({ printBackground: true }, (success, failureReason) => {
+          finish(success ? { ok: true } : { ok: false, reason: failureReason || "Print was canceled or failed." });
+        });
+      }, 500);
+    });
+    printWindow.loadURL(pathToFileURL(tempPath).toString()).catch((error) => {
+      finish({ ok: false, reason: error.message });
+    });
+  });
 });
 
 ipcMain.handle("desktop:print", async () => {

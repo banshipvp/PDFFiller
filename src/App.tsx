@@ -1452,11 +1452,31 @@ function App() {
   };
 
   const printPdf = async () => {
-    await savePdf();
+    const output = await buildPdfBytes();
+    if (!output) return;
     if (window.pdfFillerDesktop) {
-      void window.pdfFillerDesktop.print();
+      setStatus("Preparing print preview...");
+      const result = await window.pdfFillerDesktop.printPdfFile({
+        defaultName: fileName.replace(/\.pdf$/i, "") + "-filled.pdf",
+        bytes: Array.from(output),
+      });
+      setStatus(result.ok ? "Print dialog opened." : result.reason || "Print was canceled.");
     } else {
-      window.print();
+      const outputBuffer = new ArrayBuffer(output.byteLength);
+      new Uint8Array(outputBuffer).set(output);
+      const blob = new Blob([outputBuffer], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const printWindow = window.open(url, "_blank");
+      if (!printWindow) {
+        setStatus("Allow popups to print this PDF.");
+        URL.revokeObjectURL(url);
+        return;
+      }
+      printWindow.addEventListener("load", () => {
+        printWindow.focus();
+        printWindow.print();
+        URL.revokeObjectURL(url);
+      });
     }
   };
 
