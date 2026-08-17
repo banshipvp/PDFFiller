@@ -40,7 +40,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { PDFCheckBox, PDFDocument, PDFTextField, degrees, rgb, StandardFonts } from "pdf-lib";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { GlobalWorkerOptions, OPS, Util, getDocument } from "pdfjs-dist";
 import Tesseract from "tesseract.js";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -600,8 +600,8 @@ function App() {
     page: number;
     xRatio: number;
     yRatio: number;
-    viewportX: number;
-    viewportY: number;
+    clientX: number;
+    clientY: number;
   } | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<{
@@ -2032,16 +2032,14 @@ function App() {
     if (scroller && pageEl) {
       const scrollerRect = scroller.getBoundingClientRect();
       const pageRect = pageEl.getBoundingClientRect();
-      const viewportX = typeof clientX === "number" ? clientX - scrollerRect.left : scroller.clientWidth / 2;
-      const viewportY = typeof clientY === "number" ? clientY - scrollerRect.top : scroller.clientHeight / 2;
-      const anchorX = typeof clientX === "number" ? clientX : scrollerRect.left + viewportX;
-      const anchorY = typeof clientY === "number" ? clientY : scrollerRect.top + viewportY;
+      const anchorX = typeof clientX === "number" ? clientX : scrollerRect.left + scroller.clientWidth / 2;
+      const anchorY = typeof clientY === "number" ? clientY : scrollerRect.top + scroller.clientHeight / 2;
       pendingZoomAnchorRef.current = {
         page,
         xRatio: clamp((anchorX - pageRect.left) / Math.max(pageRect.width, 1), 0, 1),
         yRatio: clamp((anchorY - pageRect.top) / Math.max(pageRect.height, 1), 0, 1),
-        viewportX,
-        viewportY,
+        clientX: anchorX,
+        clientY: anchorY,
       };
       setActivePage(page);
     }
@@ -2052,34 +2050,43 @@ function App() {
     });
   }, [activePage]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const anchor = pendingZoomAnchorRef.current;
     const scroller = documentScrollerRef.current;
     if (!anchor || !scroller) return;
     pendingZoomAnchorRef.current = null;
-    window.requestAnimationFrame(() => {
-      const pageEl = pageRefs.current[anchor.page];
-      if (!pageEl) return;
-      scroller.scrollLeft = pageEl.offsetLeft + pageEl.offsetWidth * anchor.xRatio - anchor.viewportX;
-      scroller.scrollTop = pageEl.offsetTop + pageEl.offsetHeight * anchor.yRatio - anchor.viewportY;
-      setActivePage(anchor.page);
-    });
+    const pageEl = pageRefs.current[anchor.page];
+    if (!pageEl) return;
+    const pageRect = pageEl.getBoundingClientRect();
+    const targetX = pageRect.left + pageRect.width * anchor.xRatio;
+    const targetY = pageRect.top + pageRect.height * anchor.yRatio;
+    scroller.scrollLeft += targetX - anchor.clientX;
+    scroller.scrollTop += targetY - anchor.clientY;
+    setActivePage(anchor.page);
   }, [zoom]);
 
   const onDocumentWheel = useCallback((event: WheelEvent) => {
-    if (!event.ctrlKey || event.defaultPrevented) return;
+    const scroller = documentScrollerRef.current;
+    if (!event.ctrlKey || event.defaultPrevented || !scroller || !pdfDoc) return;
+    const target = event.target instanceof Node ? event.target : null;
+    const rect = scroller.getBoundingClientRect();
+    const pointerIsOverScroller =
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom;
+    if (!pointerIsOverScroller && (!target || !scroller.contains(target))) return;
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
+    if (event.deltaY === 0) return;
     zoomBy(event.deltaY < 0 ? 0.1 : -0.1, event.clientX, event.clientY);
-  }, [zoomBy]);
+  }, [pdfDoc, zoomBy]);
 
   useEffect(() => {
-    const scroller = documentScrollerRef.current;
-    if (!scroller) return;
-    scroller.addEventListener("wheel", onDocumentWheel, { capture: true, passive: false });
-    return () => scroller.removeEventListener("wheel", onDocumentWheel, { capture: true });
-  }, [onDocumentWheel, pdfDoc]);
+    window.addEventListener("wheel", onDocumentWheel, { capture: true, passive: false });
+    return () => window.removeEventListener("wheel", onDocumentWheel, { capture: true });
+  }, [onDocumentWheel]);
 
   const selectedSignatureAssets = assets.filter((asset) => asset.kind === "signature");
   const selectedInitialAssets = assets.filter((asset) => asset.kind === "initials");
