@@ -584,6 +584,14 @@ function App() {
   const suppressHistoryRef = useRef(false);
   const loadedRef = useRef(false);
   const pageRefs = useRef<Record<number, HTMLElement | null>>({});
+  const documentScrollerRef = useRef<HTMLDivElement | null>(null);
+  const pendingZoomAnchorRef = useRef<{
+    page: number;
+    xRatio: number;
+    yRatio: number;
+    viewportX: number;
+    viewportY: number;
+  } | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
   const dragRef = useRef<{
     id: string;
@@ -958,18 +966,6 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId, editingId, undo, redo]);
-
-  useEffect(() => {
-    const onWheel = (event: WheelEvent) => {
-      if (!event.ctrlKey) return;
-      const target = event.target;
-      if (!(target instanceof Element) || !target.closest(".documentScroller")) return;
-      event.preventDefault();
-      setZoom((value) => clamp(value + (event.deltaY < 0 ? 0.1 : -0.1), 0.45, 2.5));
-    };
-    window.addEventListener("wheel", onWheel, { capture: true, passive: false });
-    return () => window.removeEventListener("wheel", onWheel, { capture: true });
-  }, []);
 
   const addAnnotation = (annotation: Annotation) => {
     setAnnotations((current) => [...current, annotation]);
@@ -1955,10 +1951,55 @@ function App() {
     pageRefs.current[page]?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const zoomBy = (delta: number, clientX?: number, clientY?: number) => {
+    const scroller = documentScrollerRef.current;
+    const pageFromPointer =
+      typeof clientX === "number" && typeof clientY === "number"
+        ? (document.elementFromPoint(clientX, clientY)?.closest(".pageWrap") as HTMLElement | null)
+        : null;
+    const page = Number(pageFromPointer?.dataset.page || activePage || 1);
+    const pageEl = pageRefs.current[page];
+    if (scroller && pageEl) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const pageRect = pageEl.getBoundingClientRect();
+      const viewportX = typeof clientX === "number" ? clientX - scrollerRect.left : scroller.clientWidth / 2;
+      const viewportY = typeof clientY === "number" ? clientY - scrollerRect.top : scroller.clientHeight / 2;
+      const anchorX = typeof clientX === "number" ? clientX : scrollerRect.left + viewportX;
+      const anchorY = typeof clientY === "number" ? clientY : scrollerRect.top + viewportY;
+      pendingZoomAnchorRef.current = {
+        page,
+        xRatio: clamp((anchorX - pageRect.left) / Math.max(pageRect.width, 1), 0, 1),
+        yRatio: clamp((anchorY - pageRect.top) / Math.max(pageRect.height, 1), 0, 1),
+        viewportX,
+        viewportY,
+      };
+      setActivePage(page);
+    }
+    setZoom((value) => {
+      const next = clamp(Number((value + delta).toFixed(2)), 0.45, 2.5);
+      if (next === value) pendingZoomAnchorRef.current = null;
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const anchor = pendingZoomAnchorRef.current;
+    const scroller = documentScrollerRef.current;
+    if (!anchor || !scroller) return;
+    pendingZoomAnchorRef.current = null;
+    window.requestAnimationFrame(() => {
+      const pageEl = pageRefs.current[anchor.page];
+      if (!pageEl) return;
+      scroller.scrollLeft = pageEl.offsetLeft + pageEl.offsetWidth * anchor.xRatio - anchor.viewportX;
+      scroller.scrollTop = pageEl.offsetTop + pageEl.offsetHeight * anchor.yRatio - anchor.viewportY;
+      setActivePage(anchor.page);
+    });
+  }, [zoom]);
+
   const onDocumentWheel = (event: React.WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey || event.defaultPrevented) return;
     event.preventDefault();
-    setZoom((value) => clamp(value + (event.deltaY < 0 ? 0.1 : -0.1), 0.45, 2.5));
+    zoomBy(event.deltaY < 0 ? 0.1 : -0.1, event.clientX, event.clientY);
   };
 
   const selectedSignatureAssets = assets.filter((asset) => asset.kind === "signature");
@@ -2198,17 +2239,17 @@ function App() {
             <button onClick={redo} disabled={!redoRef.current.length} title="Redo">
               <Redo2 size={17} />
             </button>
-            <button onClick={() => setZoom((value) => clamp(value - 0.1, 0.45, 2.5))} title="Zoom out">
+            <button onClick={() => zoomBy(-0.1)} title="Zoom out">
               <ZoomOut size={17} />
             </button>
             <span>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom((value) => clamp(value + 0.1, 0.45, 2.5))} title="Zoom in">
+            <button onClick={() => zoomBy(0.1)} title="Zoom in">
               <ZoomIn size={17} />
             </button>
           </div>
         </header>
 
-        <div className={pdfDoc ? "documentScroller" : "documentScroller empty"} onWheelCapture={onDocumentWheel}>
+        <div ref={documentScrollerRef} className={pdfDoc ? "documentScroller" : "documentScroller empty"} onWheelCapture={onDocumentWheel}>
           {!pdfDoc && (
             <label className="dropzone">
               <Upload size={34} />
@@ -2589,22 +2630,43 @@ function PdfPage({
 
   useEffect(() => {
     let cancelled = false;
+    let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
     const render = async () => {
       const page = await doc.getPage(pageIndex + 1);
       const viewport = page.getViewport({ scale: zoom });
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const scratch = document.createElement("canvas");
+      scratch.width = Math.ceil(viewport.width * pixelRatio);
+      scratch.height = Math.ceil(viewport.height * pixelRatio);
+      const scratchContext = scratch.getContext("2d");
       const canvas = canvasRef.current;
-      if (!canvas || cancelled) return;
-      const context = canvas.getContext("2d");
+      if (!canvas || !scratchContext || cancelled) return;
+      scratchContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      scratchContext.fillStyle = "#ffffff";
+      scratchContext.fillRect(0, 0, viewport.width, viewport.height);
+      const task = page.render({ canvasContext: scratchContext, viewport, background: "#ffffff" });
+      renderTask = task;
+      try {
+        await task.promise;
+      } catch (error) {
+        if (!cancelled && !(error instanceof Error && error.name === "RenderingCancelledException")) {
+          console.warn("PDF page render failed", error);
+        }
+        return;
+      }
+      if (cancelled || !canvasRef.current) return;
+      const visible = canvasRef.current;
+      const context = visible.getContext("2d");
       if (!context) return;
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
+      visible.width = scratch.width;
+      visible.height = scratch.height;
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.drawImage(scratch, 0, 0);
     };
     void render();
     return () => {
       cancelled = true;
+      renderTask?.cancel();
     };
   }, [doc, pageIndex, zoom]);
 
@@ -2612,7 +2674,7 @@ function PdfPage({
   const displayHeight = pageSize.height * zoom;
 
   return (
-    <article ref={onPageRef} className={active ? "pageWrap active" : "pageWrap"} onPointerEnter={onActive}>
+    <article ref={onPageRef} className={active ? "pageWrap active" : "pageWrap"} data-page={pageIndex + 1} onPointerEnter={onActive}>
       <div className="pageNumber">Page {pageIndex + 1}</div>
       <div
         className="page"
