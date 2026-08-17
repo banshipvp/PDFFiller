@@ -42,6 +42,7 @@ import {
 import { PDFCheckBox, PDFDocument, PDFTextField, degrees, rgb, StandardFonts } from "pdf-lib";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GlobalWorkerOptions, OPS, Util, getDocument } from "pdfjs-dist";
+import Tesseract from "tesseract.js";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -216,6 +217,12 @@ type PageRange = {
   end: number;
 };
 
+type OcrResult = {
+  page: number;
+  text: string;
+  confidence: number;
+};
+
 const palette = {
   ink: "#111827",
   blue: "#2563eb",
@@ -290,7 +297,7 @@ const topMenus = [
   { title: "Home", items: ["Open PDF", "Save", "Print"] },
   { title: "Tools", items: ["Merge PDFs", "Split PDF", "Extract PDF pages", "Delete PDF pages", "Add page numbers", "Compress PDF", "Organize Pages"] },
   { title: "Convert", items: ["PDF to JPEG", "JPEG to PDF", "Word to PDF", "PDF to Word"] },
-  { title: "Edit", items: ["Edit PDF", "Add Text", "Add Images", "Erase", "Watermark", "Number PDF pages"] },
+  { title: "Edit", items: ["Edit PDF", "Check Text", "Add Text", "Add Images", "Erase", "Watermark", "Number PDF pages"] },
   { title: "Sign & Protect", items: ["Sign Document", "Initials", "Protect PDF", "Redact PDF"] },
   { title: "Generative AI", items: ["Summarize PDF", "Translate PDF", "Ask PDF"] },
 ];
@@ -572,6 +579,10 @@ function App() {
   const [splitOpen, setSplitOpen] = useState(false);
   const [removePagesOpen, setRemovePagesOpen] = useState(false);
   const [extractPagesOpen, setExtractPagesOpen] = useState(false);
+  const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState(0);
+  const [ocrError, setOcrError] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
   const [imagePlacementPreview, setImagePlacementPreview] = useState<{ page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null>(null);
@@ -605,6 +616,7 @@ function App() {
   const activeDrawRef = useRef<string | null>(null);
   const activeEraseRef = useRef(false);
   const pendingInitialPdfRef = useRef<DesktopPdfPayload | null>(null);
+  const ocrCancelRef = useRef(false);
 
   const selected = useMemo(
     () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
@@ -1427,6 +1439,63 @@ function App() {
     setStatus("Editable text boxes added.");
   };
 
+  const checkTextOnActivePage = async () => {
+    if (!pdfDoc || !pageSizes.length) {
+      setStatus("Open a PDF before checking text.");
+      return;
+    }
+    ocrCancelRef.current = false;
+    setOcrBusy(true);
+    setOcrProgress(0);
+    setOcrError("");
+    setOcrResult(null);
+    setStatus(`Checking text on page ${activePage}...`);
+    let worker: Tesseract.Worker | null = null;
+    try {
+      const page = await pdfDoc.getPage(activePage);
+      const pageSize = pageSizes[activePage - 1];
+      const scale = clamp(2400 / Math.max(pageSize.width, 1), 2, 4);
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Could not prepare the OCR image.");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
+
+      const ocrAssetRoot = new URL("./ocr/", window.location.href).href.replace(/\/$/, "");
+      worker = await Tesseract.createWorker("eng", undefined, {
+        workerPath: `${ocrAssetRoot}/worker.min.js`,
+        corePath: `${ocrAssetRoot}/tesseract-core`,
+        langPath: `${ocrAssetRoot}/lang`,
+        logger: (message) => {
+          if (message.status === "recognizing text") setOcrProgress(Math.round(message.progress * 100));
+        },
+      });
+      await worker.setParameters({
+        tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT,
+        preserve_interword_spaces: "1",
+      });
+      const { data } = await worker.recognize(canvas);
+      if (ocrCancelRef.current) return;
+      setOcrResult({
+        page: activePage,
+        text: data.text.trim(),
+        confidence: Math.round(data.confidence ?? 0),
+      });
+      setStatus(data.text.trim() ? `Checked text on page ${activePage}.` : `No text was confidently detected on page ${activePage}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Text check failed.";
+      setOcrError(message);
+      setStatus(`Check text failed: ${message}`);
+    } finally {
+      await worker?.terminate().catch(() => undefined);
+      setOcrBusy(false);
+    }
+  };
+
   const applyPrefill = () => {
     const entries = parsePrefillEntries(prefillText);
     if (!entries.length || !pageSizes.length) return;
@@ -1917,6 +1986,7 @@ function App() {
     if (item === "Organize Pages") setStatus("Use Split, Extract, Delete, or the rotate buttons to organize pages.");
     if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
+    if (item === "Check Text") void checkTextOnActivePage();
     if (item === "Add Text") setTool("text");
     if (item === "Add Images") {
       setTool("image");
@@ -1951,7 +2021,7 @@ function App() {
     pageRefs.current[page]?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const zoomBy = (delta: number, clientX?: number, clientY?: number) => {
+  const zoomBy = useCallback((delta: number, clientX?: number, clientY?: number) => {
     const scroller = documentScrollerRef.current;
     const pageFromPointer =
       typeof clientX === "number" && typeof clientY === "number"
@@ -1980,7 +2050,7 @@ function App() {
       if (next === value) pendingZoomAnchorRef.current = null;
       return next;
     });
-  };
+  }, [activePage]);
 
   useEffect(() => {
     const anchor = pendingZoomAnchorRef.current;
@@ -1996,11 +2066,20 @@ function App() {
     });
   }, [zoom]);
 
-  const onDocumentWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+  const onDocumentWheel = useCallback((event: WheelEvent) => {
     if (!event.ctrlKey || event.defaultPrevented) return;
     event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
     zoomBy(event.deltaY < 0 ? 0.1 : -0.1, event.clientX, event.clientY);
-  };
+  }, [zoomBy]);
+
+  useEffect(() => {
+    const scroller = documentScrollerRef.current;
+    if (!scroller) return;
+    scroller.addEventListener("wheel", onDocumentWheel, { capture: true, passive: false });
+    return () => scroller.removeEventListener("wheel", onDocumentWheel, { capture: true });
+  }, [onDocumentWheel, pdfDoc]);
 
   const selectedSignatureAssets = assets.filter((asset) => asset.kind === "signature");
   const selectedInitialAssets = assets.filter((asset) => asset.kind === "initials");
@@ -2239,6 +2318,10 @@ function App() {
             <button onClick={redo} disabled={!redoRef.current.length} title="Redo">
               <Redo2 size={17} />
             </button>
+            <button onClick={() => void checkTextOnActivePage()} disabled={!pdfDoc || ocrBusy} title="Check scanned or handwritten text on this page">
+              <Wand2 size={17} />
+              Check text
+            </button>
             <button onClick={() => zoomBy(-0.1)} title="Zoom out">
               <ZoomOut size={17} />
             </button>
@@ -2249,7 +2332,7 @@ function App() {
           </div>
         </header>
 
-        <div ref={documentScrollerRef} className={pdfDoc ? "documentScroller" : "documentScroller empty"} onWheelCapture={onDocumentWheel}>
+        <div ref={documentScrollerRef} className={pdfDoc ? "documentScroller" : "documentScroller empty"}>
           {!pdfDoc && (
             <label className="dropzone">
               <Upload size={34} />
@@ -2497,6 +2580,25 @@ function App() {
         <ExtractPagesModal
           onClose={() => setExtractPagesOpen(false)}
           onExtract={(file, pages) => void extractPagesFromFile(file, pages)}
+        />
+      )}
+      {(ocrBusy || ocrResult || ocrError) && (
+        <OcrReviewModal
+          busy={ocrBusy}
+          progress={ocrProgress}
+          result={ocrResult}
+          error={ocrError}
+          onClose={() => {
+            ocrCancelRef.current = true;
+            setOcrBusy(false);
+            setOcrResult(null);
+            setOcrError("");
+          }}
+          onUseText={(text) => {
+            if (!text.trim()) return;
+            createTextAnnotation(activePage, { x: 0.08, y: 0.12 }, { text: text.trim(), w: 0.64, h: 0.16, fontSize: 13 });
+            setOcrResult(null);
+          }}
         />
       )}
       {isDesktop && showUpdateGate && (
@@ -3169,6 +3271,79 @@ function ToolContextMenu({
           <input type="range" min="1" max="12" value={shapeStrokeWidth} onChange={(event) => onShapeStrokeWidth(Number(event.target.value))} />
         </>
       )}
+    </div>
+  );
+}
+
+function OcrReviewModal({
+  busy,
+  progress,
+  result,
+  error,
+  onClose,
+  onUseText,
+}: {
+  busy: boolean;
+  progress: number;
+  result: OcrResult | null;
+  error: string;
+  onClose: () => void;
+  onUseText: (text: string) => void;
+}) {
+  const [editableText, setEditableText] = useState(result?.text ?? "");
+
+  useEffect(() => {
+    setEditableText(result?.text ?? "");
+  }, [result]);
+
+  return (
+    <div className="modalBackdrop" role="dialog" aria-modal="true">
+      <section className="ocrModal">
+        <header>
+          <div>
+            <h2>Check text</h2>
+            <p className="muted">OCR is a best guess, especially for handwriting. Review it before using it.</p>
+          </div>
+          <button onClick={onClose}>{busy ? "Cancel" : "Close"}</button>
+        </header>
+
+        {busy && (
+          <>
+            <div className="updateProgress" aria-label="OCR progress">
+              <span style={{ width: `${progress}%` }} />
+            </div>
+            <p className="muted">Reading the scanned page... {progress}%</p>
+          </>
+        )}
+
+        {error && <p className="errorText">{error}</p>}
+
+        {result && (
+          <>
+            <div className="ocrConfidence">
+              <span>Page {result.page}</span>
+              <strong>{result.confidence}% confidence</strong>
+            </div>
+            <textarea
+              value={editableText}
+              onChange={(event) => setEditableText(event.target.value)}
+              placeholder="No text was detected."
+            />
+            <div className="modalActions">
+              <button
+                onClick={() => {
+                  void navigator.clipboard?.writeText(editableText);
+                }}
+              >
+                Copy
+              </button>
+              <button className="primaryAction" disabled={!editableText.trim()} onClick={() => onUseText(editableText)}>
+                Use as text box
+              </button>
+            </div>
+          </>
+        )}
+      </section>
     </div>
   );
 }

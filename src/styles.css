@@ -1532,6 +1532,75 @@ button:disabled {
   width: 100%;
 }
 
+.ocrModal {
+  background: #ffffff;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 10px;
+  box-shadow: 0 34px 90px rgba(15, 23, 42, 0.32);
+  display: grid;
+  gap: 14px;
+  max-width: 680px;
+  padding: 20px;
+  width: min(94vw, 680px);
+}
+
+.ocrModal header {
+  align-items: flex-start;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+}
+
+.ocrModal h2 {
+  color: #0f172a;
+  font-size: 20px;
+  font-weight: 900;
+  margin: 0 0 4px;
+}
+
+.ocrModal header button,
+.ocrModal .modalActions button {
+  background: #ffffff;
+  border: 1px solid #d1dbe7;
+  border-radius: 7px;
+  color: #172033;
+  font-weight: 800;
+  min-height: 38px;
+  padding: 8px 12px;
+}
+
+.ocrModal textarea {
+  background: #f8fafc;
+  border: 1px solid #ccd6e2;
+  border-radius: 8px;
+  color: #111827;
+  min-height: 190px;
+  padding: 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.ocrConfidence {
+  align-items: center;
+  background: #eef4ff;
+  border: 1px solid #c7d7f4;
+  border-radius: 8px;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.ocrConfidence span {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.ocrConfidence strong {
+  color: #1d4ed8;
+  font-size: 13px;
+}
+
 .signatureModal {
   background: #ffffff;
   border-radius: 8px;
