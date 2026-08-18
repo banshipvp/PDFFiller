@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import { PDFCheckBox, PDFDocument, PDFTextField, degrees, rgb, StandardFonts } from "pdf-lib";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { GlobalWorkerOptions, OPS, Util, getDocument } from "pdfjs-dist";
+import { AnnotationMode, GlobalWorkerOptions, OPS, Util, getDocument } from "pdfjs-dist";
 import Tesseract from "tesseract.js";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
@@ -120,6 +120,7 @@ type ChoiceAnnotation = BaseAnnotation & {
   type: "checkbox" | "radio" | "checkmark";
   checked: boolean;
   mark?: "check" | "x";
+  sourceFieldName?: string;
 };
 
 type ArrowAnnotation = BaseAnnotation & {
@@ -141,6 +142,7 @@ type FieldAnnotation = BaseAnnotation & {
   name: string;
   value: string;
   fontSize: number;
+  sourceFieldName?: string;
 };
 
 type Annotation =
@@ -431,6 +433,14 @@ function rectFromPdf(viewport: any, rect: number[], pageSize: PageSize) {
     w: clamp(width / pageSize.width, 0.01, 1),
     h: clamp(height / pageSize.height, 0.01, 1),
   };
+}
+
+function fieldFontSize(box: Pick<BaseAnnotation, "h">, pageSize: PageSize) {
+  return Math.round(clamp(box.h * pageSize.height * 0.48, 6, 13));
+}
+
+function isCheckedFieldValue(value: unknown) {
+  return /^(1|true|yes|y|checked|x)$/i.test(String(value ?? ""));
 }
 
 function extractLineZones(operatorList: any, viewport: any, pageSize: PageSize, page: number): LineZone[] {
@@ -755,14 +765,45 @@ function App() {
         if (!candidate.rect) continue;
         const box = rectFromPdf(viewport, candidate.rect, pageSize);
         if (candidate.subtype === "Widget") {
+          const fieldName = candidate.fieldName || `Field ${extractedForms.length + 1}`;
+          const fieldType = candidate.fieldType || "Tx";
+          const fieldValue = candidate.fieldValue == null ? "" : String(candidate.fieldValue);
           extractedForms.push({
             id: uid("formzone"),
             page: pageNumber,
             ...box,
-            name: candidate.fieldName || `Field ${extractedForms.length + 1}`,
-            fieldType: candidate.fieldType || "Tx",
-            value: typeof candidate.fieldValue === "string" ? candidate.fieldValue : "",
+            name: fieldName,
+            fieldType,
+            value: fieldValue,
           });
+          if (fieldType === "Btn") {
+            importedAnnotations.push({
+              id: uid("sourceCheckbox"),
+              page: pageNumber,
+              type: "checkbox",
+              x: box.x,
+              y: box.y,
+              w: box.w,
+              h: box.h,
+              checked: isCheckedFieldValue(fieldValue),
+              mark: "check",
+              sourceFieldName: fieldName,
+            });
+          } else {
+            importedAnnotations.push({
+              id: uid("sourceField"),
+              page: pageNumber,
+              type: "field",
+              x: box.x,
+              y: box.y,
+              w: box.w,
+              h: box.h,
+              name: fieldName,
+              value: fieldValue,
+              fontSize: fieldFontSize(box, pageSize),
+              sourceFieldName: fieldName,
+            });
+          }
           continue;
         }
         if (candidate.subtype === "FreeText" && candidate.contents) {
@@ -986,6 +1027,18 @@ function App() {
   };
 
   const removeAnnotation = (id: string) => {
+    const existing = annotations.find((annotation) => annotation.id === id);
+    if (existing?.type === "field" && existing.sourceFieldName) {
+      updateAnnotation(id, { value: "" });
+      setEditingId(id);
+      setStatus("Form field cleared.");
+      return;
+    }
+    if (existing && isChoiceAnnotation(existing) && existing.sourceFieldName) {
+      updateAnnotation(id, { checked: false });
+      setStatus("Form field cleared.");
+      return;
+    }
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
     setSelectedId((current) => (current === id ? null : current));
     setEditingId((current) => (current === id ? null : current));
@@ -1078,8 +1131,9 @@ function App() {
             y: formZone.y,
             w: formZone.w,
             h: formZone.h,
-            checked: /^(1|true|yes|y|checked|x)$/i.test(formZone.value ?? ""),
+            checked: isCheckedFieldValue(formZone.value),
             mark: "check",
+            sourceFieldName: formZone.name,
           });
           return;
         }
@@ -1093,7 +1147,8 @@ function App() {
           h: formZone.h,
           name: formZone.name,
           value: formZone.value ?? "",
-          fontSize: 12,
+          fontSize: fieldFontSize(formZone, pageSizes[page - 1]),
+          sourceFieldName: formZone.name,
         });
         return;
       }
@@ -1523,10 +1578,10 @@ function App() {
     const pdf = await PDFDocument.load(pdfBytes.slice(0));
     const font = await pdf.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
+    const form = pdf.getForm();
     const prefillEntries = parsePrefillEntries(prefillText);
 
     if (prefillEntries.length) {
-      const form = pdf.getForm();
       const fields = form.getFields();
       for (const entry of prefillEntries) {
         const field = fields.find((candidate) => candidate.getName().toLowerCase() === entry.key.toLowerCase());
@@ -1550,7 +1605,15 @@ function App() {
       const { width, height } = page.getSize();
 
       if (annotation.type === "field") {
-        const field = pdf.getForm().createTextField(annotation.name || uid("Field"));
+        if (annotation.sourceFieldName) {
+          try {
+            form.getTextField(annotation.sourceFieldName).setText(annotation.value);
+          } catch {
+            // Unsupported source fields are left as-is rather than duplicated.
+          }
+          continue;
+        }
+        const field = form.createTextField(annotation.name || uid("Field"));
         field.setText(annotation.value);
         field.addToPage(page, {
           x: annotation.x * width,
@@ -1561,6 +1624,17 @@ function App() {
           borderColor: rgb(0.37, 0.48, 0.61),
           backgroundColor: rgb(1, 1, 1),
         });
+        continue;
+      }
+
+      if (isChoiceAnnotation(annotation) && annotation.sourceFieldName) {
+        try {
+          const checkbox = form.getCheckBox(annotation.sourceFieldName);
+          if (annotation.checked) checkbox.check();
+          else checkbox.uncheck();
+        } catch {
+          // Unsupported button widgets are left intact.
+        }
         continue;
       }
 
@@ -1724,7 +1798,7 @@ function App() {
       }
     }
 
-    pdf.getForm().updateFieldAppearances(font);
+    form.updateFieldAppearances(font);
     return pdf.save();
   };
 
@@ -2753,7 +2827,7 @@ function PdfPage({
       scratchContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       scratchContext.fillStyle = "#ffffff";
       scratchContext.fillRect(0, 0, viewport.width, viewport.height);
-      const task = page.render({ canvasContext: scratchContext, viewport, background: "#ffffff" });
+      const task = page.render({ canvasContext: scratchContext, viewport, background: "#ffffff", annotationMode: AnnotationMode.ENABLE_FORMS });
       renderTask = task;
       try {
         await task.promise;
@@ -2984,9 +3058,10 @@ function AnnotationView({
             value={annotation.value}
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onUpdate(annotation.id, { value: event.target.value })}
+            style={{ fontSize: annotation.fontSize * zoom }}
           />
         ) : (
-          <div className="fieldAnnotation">{annotation.value || annotation.name}</div>
+          <div className="fieldAnnotation" style={{ fontSize: annotation.fontSize * zoom }}>{annotation.value}</div>
         )
       )}
       {isImageAnnotation(annotation) && <img src={annotation.dataUrl} alt={annotation.label} draggable={false} />}

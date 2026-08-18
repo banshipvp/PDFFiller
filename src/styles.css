@@ -621,10 +621,10 @@ button:disabled {
   border: 1px solid #2563eb;
   border-radius: 2px;
   height: 100%;
-  line-height: 1.15;
+  line-height: 1.1;
   min-height: 0;
   outline: none;
-  padding: 1px 2px;
+  padding: 1px 3px;
   resize: none;
   width: 100%;
 }
@@ -632,12 +632,14 @@ button:disabled {
 .fieldAnnotation {
   align-items: center;
   background: #ffffff;
-  border: 1px dashed #64748b;
+  border: 1px solid rgba(37, 99, 235, 0.46);
   color: #334155;
   display: flex;
-  font-size: 12px;
   height: 100%;
-  padding: 4px 6px;
+  line-height: 1.05;
+  overflow: hidden;
+  padding: 1px 3px;
+  white-space: nowrap;
   width: 100%;
 }
 
