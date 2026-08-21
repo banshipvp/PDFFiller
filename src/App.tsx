@@ -225,6 +225,13 @@ type OcrResult = {
   confidence: number;
 };
 
+type PageAnalysis = {
+  textZones: TextZone[];
+  formZones: FormZone[];
+  lineZones: LineZone[];
+  annotations: Annotation[];
+};
+
 const palette = {
   ink: "#111827",
   blue: "#2563eb",
@@ -413,6 +420,10 @@ function isChoiceAnnotation(annotation: Annotation): annotation is ChoiceAnnotat
   return ["checkbox", "radio", "checkmark"].includes(annotation.type);
 }
 
+function hasSourceFieldName(annotation: Annotation): annotation is (FieldAnnotation | ChoiceAnnotation) & { sourceFieldName: string } {
+  return (annotation.type === "field" || isChoiceAnnotation(annotation)) && Boolean(annotation.sourceFieldName);
+}
+
 function pagePoint(event: React.PointerEvent, pageEl: HTMLDivElement) {
   const rect = pageEl.getBoundingClientRect();
   return {
@@ -498,6 +509,109 @@ function extractLineZones(operatorList: any, viewport: any, pageSize: PageSize, 
         Math.abs(other.w - zone.w) < 0.02,
     );
   });
+}
+
+async function analyzePdfPage(doc: any, pageNumber: number, pageSize: PageSize): Promise<PageAnalysis> {
+  const page = await doc.getPage(pageNumber);
+  const viewport = page.getViewport({ scale: 1 });
+  const textZones: TextZone[] = [];
+  const formZones: FormZone[] = [];
+  const lineZones: LineZone[] = [];
+  const annotations: Annotation[] = [];
+
+  const operatorList = await page.getOperatorList();
+  lineZones.push(...extractLineZones(operatorList, viewport, pageSize, pageNumber));
+
+  const textContent = await page.getTextContent();
+  for (const item of textContent.items as any[]) {
+    if (!item.str?.trim()) continue;
+    const transform = Util.transform(viewport.transform, item.transform);
+    const fontSize = Math.max(8, Math.abs(transform[3]));
+    const width = Math.max(item.width || fontSize * item.str.length * 0.45, fontSize * 0.5);
+    const height = Math.max(fontSize * 1.15, item.height || fontSize);
+    textZones.push({
+      id: uid("zone"),
+      page: pageNumber,
+      x: clamp(transform[4] / pageSize.width, 0, 1),
+      y: clamp((transform[5] - height) / pageSize.height, 0, 1),
+      w: clamp(width / pageSize.width, 0.01, 1),
+      h: clamp(height / pageSize.height, 0.01, 1),
+      text: item.str,
+      fontSize,
+    });
+  }
+
+  const pdfAnnotations = await page.getAnnotations();
+  for (const candidate of pdfAnnotations as any[]) {
+    if (!candidate.rect) continue;
+    const box = rectFromPdf(viewport, candidate.rect, pageSize);
+    if (candidate.subtype === "Widget") {
+      const fieldName = candidate.fieldName || `Field ${formZones.length + 1}`;
+      const fieldType = candidate.fieldType || "Tx";
+      const fieldValue = candidate.fieldValue == null ? "" : String(candidate.fieldValue);
+      formZones.push({
+        id: uid("formzone"),
+        page: pageNumber,
+        ...box,
+        name: fieldName,
+        fieldType,
+        value: fieldValue,
+      });
+      if (fieldType === "Btn") {
+        annotations.push({
+          id: uid("sourceCheckbox"),
+          page: pageNumber,
+          type: "checkbox",
+          x: box.x,
+          y: box.y,
+          w: box.w,
+          h: box.h,
+          checked: isCheckedFieldValue(fieldValue),
+          mark: "check",
+          sourceFieldName: fieldName,
+        });
+      } else {
+        annotations.push({
+          id: uid("sourceField"),
+          page: pageNumber,
+          type: "field",
+          x: box.x,
+          y: box.y,
+          w: box.w,
+          h: box.h,
+          name: fieldName,
+          value: fieldValue,
+          fontSize: fieldFontSize(box, pageSize),
+          sourceFieldName: fieldName,
+        });
+      }
+      continue;
+    }
+    if (candidate.subtype === "FreeText" && candidate.contents) {
+      annotations.push({
+        id: uid("edgeText"),
+        page: pageNumber,
+        type: "text",
+        ...box,
+        text: candidate.contents,
+        color: palette.blue,
+        fontSize: 14,
+        bold: false,
+      });
+    }
+    if (candidate.subtype === "Highlight") {
+      annotations.push({
+        id: uid("edgeHighlight"),
+        page: pageNumber,
+        type: "highlight",
+        ...box,
+        color: "#fde047",
+        opacity: 0.45,
+      });
+    }
+  }
+
+  return { textZones, formZones, lineZones, annotations };
 }
 
 function loadAssets() {
@@ -627,11 +741,20 @@ function App() {
   const activeEraseRef = useRef(false);
   const pendingInitialPdfRef = useRef<DesktopPdfPayload | null>(null);
   const ocrCancelRef = useRef(false);
+  const analyzedPagesRef = useRef(new Set<number>());
+  const analyzingPagesRef = useRef(new Set<number>());
+  const activeTabIdRef = useRef<string | null>(null);
+  const pdfDocRef = useRef<any>(null);
 
   const selected = useMemo(
     () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
     [annotations, selectedId],
   );
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId;
+    pdfDocRef.current = pdfDoc;
+  }, [activeTabId, pdfDoc]);
 
   const currentTabSnapshot = useCallback((id = activeTabId): PdfTabState | null => {
     if (!id || !pdfBytes || !pdfDoc) return null;
@@ -660,6 +783,12 @@ function App() {
   const restoreTab = (tab: PdfTabState) => {
     suppressHistoryRef.current = true;
     loadedRef.current = true;
+    analyzedPagesRef.current = new Set([
+      ...tab.textZones.map((zone) => zone.page),
+      ...tab.formZones.map((zone) => zone.page),
+      ...tab.lineZones.map((zone) => zone.page),
+    ]);
+    analyzingPagesRef.current = new Set();
     historyRef.current = tab.history;
     redoRef.current = tab.redo;
     lastAnnotationsRef.current = tab.annotations;
@@ -715,6 +844,8 @@ function App() {
     setFormZones([]);
     setLineZones([]);
     setAnnotations([]);
+    analyzedPagesRef.current = new Set();
+    analyzingPagesRef.current = new Set();
     setSelectedId(null);
     setEditingId(null);
     setIsDirty(false);
@@ -725,113 +856,19 @@ function App() {
   const loadPdfBytes = async (bytes: ArrayBuffer, name: string, sourcePath: string | null = null, options: { replaceActive?: boolean } = {}) => {
     const previousSnapshot = currentTabSnapshot();
     setStatus("Opening PDF...");
+    analyzedPagesRef.current = new Set();
+    analyzingPagesRef.current = new Set();
     const task = getDocument({ data: bytes.slice(0) });
     const doc = await task.promise;
     const sizes: PageSize[] = [];
-    const extractedText: TextZone[] = [];
-    const extractedForms: FormZone[] = [];
-    const extractedLines: LineZone[] = [];
-    const importedAnnotations: Annotation[] = [];
 
     for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
       const page = await doc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
-      const pageSize = { width: viewport.width, height: viewport.height };
-      sizes.push(pageSize);
-      const operatorList = await page.getOperatorList();
-      extractedLines.push(...extractLineZones(operatorList, viewport, pageSize, pageNumber));
-
-      const textContent = await page.getTextContent();
-      for (const item of textContent.items as any[]) {
-        if (!item.str?.trim()) continue;
-        const transform = Util.transform(viewport.transform, item.transform);
-        const fontSize = Math.max(8, Math.abs(transform[3]));
-        const width = Math.max(item.width || fontSize * item.str.length * 0.45, fontSize * 0.5);
-        const height = Math.max(fontSize * 1.15, item.height || fontSize);
-        extractedText.push({
-          id: uid("zone"),
-          page: pageNumber,
-          x: clamp(transform[4] / pageSize.width, 0, 1),
-          y: clamp((transform[5] - height) / pageSize.height, 0, 1),
-          w: clamp(width / pageSize.width, 0.01, 1),
-          h: clamp(height / pageSize.height, 0.01, 1),
-          text: item.str,
-          fontSize,
-        });
-      }
-
-      const pdfAnnotations = await page.getAnnotations();
-      for (const candidate of pdfAnnotations as any[]) {
-        if (!candidate.rect) continue;
-        const box = rectFromPdf(viewport, candidate.rect, pageSize);
-        if (candidate.subtype === "Widget") {
-          const fieldName = candidate.fieldName || `Field ${extractedForms.length + 1}`;
-          const fieldType = candidate.fieldType || "Tx";
-          const fieldValue = candidate.fieldValue == null ? "" : String(candidate.fieldValue);
-          extractedForms.push({
-            id: uid("formzone"),
-            page: pageNumber,
-            ...box,
-            name: fieldName,
-            fieldType,
-            value: fieldValue,
-          });
-          if (fieldType === "Btn") {
-            importedAnnotations.push({
-              id: uid("sourceCheckbox"),
-              page: pageNumber,
-              type: "checkbox",
-              x: box.x,
-              y: box.y,
-              w: box.w,
-              h: box.h,
-              checked: isCheckedFieldValue(fieldValue),
-              mark: "check",
-              sourceFieldName: fieldName,
-            });
-          } else {
-            importedAnnotations.push({
-              id: uid("sourceField"),
-              page: pageNumber,
-              type: "field",
-              x: box.x,
-              y: box.y,
-              w: box.w,
-              h: box.h,
-              name: fieldName,
-              value: fieldValue,
-              fontSize: fieldFontSize(box, pageSize),
-              sourceFieldName: fieldName,
-            });
-          }
-          continue;
-        }
-        if (candidate.subtype === "FreeText" && candidate.contents) {
-          importedAnnotations.push({
-            id: uid("edgeText"),
-            page: pageNumber,
-            type: "text",
-            ...box,
-            text: candidate.contents,
-            color: palette.blue,
-            fontSize: 14,
-            bold: false,
-          });
-        }
-        if (candidate.subtype === "Highlight") {
-          importedAnnotations.push({
-            id: uid("edgeHighlight"),
-            page: pageNumber,
-            type: "highlight",
-            ...box,
-            color: "#fde047",
-            opacity: 0.45,
-          });
-        }
-      }
+      sizes.push({ width: viewport.width, height: viewport.height });
     }
 
-    const statusText = `${doc.numPages} page${doc.numPages === 1 ? "" : "s"}, ${extractedForms.length} form fields, ${extractedLines.length} fill lines`;
+    const statusText = `${doc.numPages} page${doc.numPages === 1 ? "" : "s"} ready. Form fields load as pages come into view.`;
     const tabId = options.replaceActive && activeTabId ? activeTabId : uid("tab");
     const nextTab: PdfTabState = {
       id: tabId,
@@ -840,10 +877,10 @@ function App() {
       pdfBytes: bytes,
       pdfDoc: doc,
       pageSizes: sizes,
-      textZones: extractedText,
-      formZones: extractedForms,
-      lineZones: extractedLines,
-      annotations: importedAnnotations,
+      textZones: [],
+      formZones: [],
+      lineZones: [],
+      annotations: [],
       selectedId: null,
       editingId: null,
       zoom: 1,
@@ -865,15 +902,15 @@ function App() {
     setFileName(name);
     setCurrentPath(sourcePath);
     setPageSizes(sizes);
-    setTextZones(extractedText);
-    setFormZones(extractedForms);
-    setLineZones(extractedLines);
+    setTextZones([]);
+    setFormZones([]);
+    setLineZones([]);
     suppressHistoryRef.current = true;
     historyRef.current = [];
     redoRef.current = [];
-    lastAnnotationsRef.current = importedAnnotations;
+    lastAnnotationsRef.current = [];
     loadedRef.current = true;
-    setAnnotations(importedAnnotations);
+    setAnnotations([]);
     setSelectedId(null);
     setEditingId(null);
     setIsDirty(false);
@@ -1019,6 +1056,48 @@ function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selectedId, editingId, undo, redo]);
+
+  const ensurePageAnalyzed = useCallback(async (page: number) => {
+    if (!pdfDoc || !pageSizes[page - 1]) return;
+    if (analyzedPagesRef.current.has(page) || analyzingPagesRef.current.has(page)) return;
+    const doc = pdfDoc;
+    const tabId = activeTabId;
+    analyzingPagesRef.current.add(page);
+    try {
+      const analysis = await analyzePdfPage(doc, page, pageSizes[page - 1]);
+      if (pdfDocRef.current !== doc || activeTabIdRef.current !== tabId) return;
+      analyzedPagesRef.current.add(page);
+      setTextZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.textZones]);
+      setFormZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.formZones]);
+      setLineZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.lineZones]);
+      if (analysis.annotations.length) {
+        suppressHistoryRef.current = true;
+        setAnnotations((current) => {
+          const sourceKeys = new Set<string>();
+          for (const annotation of current) {
+            if (annotation.page === page && hasSourceFieldName(annotation)) {
+              sourceKeys.add(`${annotation.type}:${annotation.sourceFieldName}`);
+            }
+          }
+          const imported = analysis.annotations.filter((annotation) => {
+            if (hasSourceFieldName(annotation)) {
+              return !sourceKeys.has(`${annotation.type}:${annotation.sourceFieldName}`);
+            }
+            return true;
+          });
+          return imported.length ? [...current, ...imported] : current;
+        });
+      }
+      const formCount = analysis.formZones.length;
+      const lineCount = analysis.lineZones.length;
+      if (formCount || lineCount) setStatus(`Page ${page} ready: ${formCount} form fields, ${lineCount} fill lines.`);
+    } catch (error) {
+      console.warn("Page analysis failed", error);
+      setStatus(`Page ${page} loaded. Some fill helpers could not be detected.`);
+    } finally {
+      analyzingPagesRef.current.delete(page);
+    }
+  }, [activeTabId, pageSizes, pdfDoc]);
 
   const addAnnotation = (annotation: Annotation) => {
     setAnnotations((current) => [...current, annotation]);
@@ -2472,6 +2551,7 @@ function App() {
                 }}
                 onUpdate={updateAnnotation}
                 onActive={() => setActivePage(index + 1)}
+                onVisible={ensurePageAnalyzed}
               />
             ))}
         </div>
@@ -2778,6 +2858,7 @@ function PdfPage({
   onEdit,
   onUpdate,
   onActive,
+  onVisible,
 }: {
   doc: any;
   pageIndex: number;
@@ -2808,10 +2889,14 @@ function PdfPage({
   onEdit: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Annotation>) => void;
   onActive: () => void;
+  onVisible: (page: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = useRef<HTMLElement | null>(null);
+  const [shouldRender, setShouldRender] = useState(false);
 
   useEffect(() => {
+    if (!shouldRender) return;
     let cancelled = false;
     let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
     const render = async () => {
@@ -2851,13 +2936,44 @@ function PdfPage({
       cancelled = true;
       renderTask?.cancel();
     };
-  }, [doc, pageIndex, zoom]);
+  }, [doc, pageIndex, shouldRender, zoom]);
+
+  useEffect(() => {
+    setShouldRender(false);
+  }, [doc, pageIndex]);
+
+  useEffect(() => {
+    const node = wrapRef.current;
+    if (!node) return;
+    const pageNumber = pageIndex + 1;
+    if (!("IntersectionObserver" in window)) {
+      setShouldRender(true);
+      onVisible(pageNumber);
+      return;
+    }
+    const root = node.closest(".documentScroller");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setShouldRender(true);
+        onVisible(pageNumber);
+      },
+      { root, rootMargin: "1400px 0px", threshold: 0 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [onVisible, pageIndex]);
+
+  const setWrapRef = useCallback((node: HTMLElement | null) => {
+    wrapRef.current = node;
+    onPageRef(node);
+  }, [onPageRef]);
 
   const displayWidth = pageSize.width * zoom;
   const displayHeight = pageSize.height * zoom;
 
   return (
-    <article ref={onPageRef} className={active ? "pageWrap active" : "pageWrap"} data-page={pageIndex + 1} onPointerEnter={onActive}>
+    <article ref={setWrapRef} className={active ? "pageWrap active" : "pageWrap"} data-page={pageIndex + 1} onPointerEnter={onActive}>
       <div className="pageNumber">Page {pageIndex + 1}</div>
       <div
         className="page"
