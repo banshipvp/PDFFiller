@@ -7,6 +7,7 @@ const { pathToFileURL } = require("node:url");
 const isDev = process.env.PDF_FILLER_DEV === "1";
 let mainWindow = null;
 let pendingPdfPath = null;
+let lastPdfPath = null;
 let currentUpdateStatus = "Updater ready";
 let hasUnsavedChanges = false;
 let closeAfterSave = false;
@@ -80,6 +81,7 @@ function findPdfArg(argv) {
 }
 
 async function readPdfPayload(filePath) {
+  lastPdfPath = filePath;
   const bytes = await fs.readFile(filePath);
   return {
     path: filePath,
@@ -90,6 +92,7 @@ async function readPdfPayload(filePath) {
 
 function sendPdfToWindow(filePath) {
   if (!filePath) return;
+  lastPdfPath = filePath;
   if (!mainWindow || !mainWindow.webContents) {
     pendingPdfPath = filePath;
     return;
@@ -224,6 +227,7 @@ if (!gotLock) {
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
     pendingPdfPath = findPdfArg(process.argv) || await consumePdfForUpdate();
+    if (pendingPdfPath) lastPdfPath = pendingPdfPath;
     createWindow();
     mainWindow.webContents.once("did-finish-load", () => {
       void checkForUpdates(false);
@@ -243,6 +247,7 @@ ipcMain.handle("desktop:get-initial-pdf", async () => {
   if (!pendingPdfPath) return null;
   const filePath = pendingPdfPath;
   pendingPdfPath = null;
+  lastPdfPath = filePath;
   return readPdfPayload(filePath);
 });
 
@@ -259,7 +264,10 @@ ipcMain.handle("desktop:close-after-save", () => {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
 });
 
-ipcMain.handle("desktop:read-pdf-file", async (_event, filePath) => readPdfPayload(filePath));
+ipcMain.handle("desktop:read-pdf-file", async (_event, filePath) => {
+  lastPdfPath = filePath;
+  return readPdfPayload(filePath);
+});
 
 ipcMain.handle("desktop:get-startup-enabled", () => {
   return app.getLoginItemSettings().openAtLogin;
@@ -393,7 +401,7 @@ ipcMain.handle("desktop:download-update", async (_event, payload = {}) => {
     return { ok: false, reason: "development" };
   }
   try {
-    await rememberPdfForUpdate(payload.reopenPath || pendingPdfPath);
+    await rememberPdfForUpdate(payload.reopenPath || lastPdfPath || pendingPdfPath);
     sendUpdateState({ phase: "downloading", status: "Downloading update...", percent: 0 });
     await autoUpdater.downloadUpdate();
     return { ok: true };

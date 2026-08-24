@@ -1723,12 +1723,7 @@ function App() {
       form.updateFieldAppearances(font);
     }
 
-    const exportAnnotations = [
-      ...annotations.filter((annotation) => annotation.type !== "signature" && annotation.type !== "initials"),
-      ...annotations.filter((annotation) => annotation.type === "signature" || annotation.type === "initials"),
-    ];
-
-    for (const annotation of exportAnnotations) {
+    for (const annotation of annotations) {
       const page = pdf.getPage(annotation.page - 1);
       const { width, height } = page.getSize();
 
@@ -1766,8 +1761,31 @@ function App() {
           // Unsupported button widgets are left intact.
         }
         form.updateFieldAppearances(font);
-        continue;
       }
+    }
+
+    const hasSignatureOverlay = annotations.some((annotation) => annotation.type === "signature" || annotation.type === "initials");
+    if (hasSignatureOverlay) {
+      try {
+        form.flatten({ updateFieldAppearances: true });
+      } catch {
+        form.updateFieldAppearances(font);
+      }
+    }
+
+    const exportAnnotations = [
+      ...annotations.filter((annotation) =>
+        annotation.type !== "field" &&
+        !(isChoiceAnnotation(annotation) && annotation.sourceFieldName) &&
+        annotation.type !== "signature" &&
+        annotation.type !== "initials",
+      ),
+      ...annotations.filter((annotation) => annotation.type === "signature" || annotation.type === "initials"),
+    ];
+
+    for (const annotation of exportAnnotations) {
+      const page = pdf.getPage(annotation.page - 1);
+      const { width, height } = page.getSize();
 
       if (isTextAnnotation(annotation)) {
         if (annotation.background) {
