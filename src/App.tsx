@@ -1327,6 +1327,8 @@ function App() {
         checked: true,
         mark: tool === "checkmark" ? "check" : "x",
       });
+      setPlacementPreview(null);
+      setImagePlacementPreview(null);
       return;
     }
 
@@ -1350,6 +1352,8 @@ function App() {
         dataUrl: asset.dataUrl,
         label: asset.label,
       });
+      setPlacementPreview(null);
+      setImagePlacementPreview(null);
       return;
     }
 
@@ -4033,6 +4037,7 @@ function SignatureModal({ kind, onSave, onClose }: { kind: "signature" | "initia
   const [label, setLabel] = useState(kind === "signature" ? "My signature" : "My initials");
   const [typed, setTyped] = useState("");
   const [selectedFont, setSelectedFont] = useState(signatureFonts[0].id);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -4061,11 +4066,46 @@ function SignatureModal({ kind, onSave, onClose }: { kind: "signature" | "initia
     context.fillStyle = "#111827";
     context.font = `${kind === "signature" ? 64 : 76}px ${font.family}`;
     context.fillText(typed.trim(), 42, 126);
+    setError("");
   };
 
   const clear = () => {
     const context = canvasRef.current?.getContext("2d");
     if (canvasRef.current && context) context.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+    setError("");
+  };
+
+  const signatureDataUrl = () => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return "";
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let minX = canvas.width;
+    let minY = canvas.height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < canvas.height; y += 1) {
+      for (let x = 0; x < canvas.width; x += 1) {
+        if (pixels[(y * canvas.width + x) * 4 + 3] <= 8) continue;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (maxX < minX || maxY < minY) return "";
+    const padding = 18;
+    const left = Math.max(0, minX - padding);
+    const top = Math.max(0, minY - padding);
+    const width = Math.min(canvas.width - left, maxX - minX + padding * 2);
+    const height = Math.min(canvas.height - top, maxY - minY + padding * 2);
+    const trimmed = document.createElement("canvas");
+    trimmed.width = Math.max(1, width);
+    trimmed.height = Math.max(1, height);
+    const trimmedContext = trimmed.getContext("2d");
+    if (!trimmedContext) return "";
+    trimmedContext.drawImage(canvas, left, top, width, height, 0, 0, width, height);
+    return trimmed.toDataURL("image/png");
   };
 
   return (
@@ -4103,6 +4143,7 @@ function SignatureModal({ kind, onSave, onClose }: { kind: "signature" | "initia
           className="signaturePad"
           onPointerDown={(event) => {
             drawingRef.current = true;
+            setError("");
             const point = canvasPoint(event);
             const context = event.currentTarget.getContext("2d");
             context?.beginPath();
@@ -4119,14 +4160,18 @@ function SignatureModal({ kind, onSave, onClose }: { kind: "signature" | "initia
           onPointerUp={() => { drawingRef.current = false; }}
           onPointerCancel={() => { drawingRef.current = false; }}
         />
+        {error && <p className="errorText">{error}</p>}
         <footer>
           <button onClick={clear}>Clear</button>
           <button
             className="primaryAction"
             onClick={() => {
-              const canvas = canvasRef.current;
-              if (!canvas) return;
-              onSave({ id: uid(kind), kind, label: label.trim() || (kind === "signature" ? "Signature" : "Initials"), dataUrl: canvas.toDataURL("image/png") });
+              const dataUrl = signatureDataUrl();
+              if (!dataUrl) {
+                setError(`Type or draw ${kind === "signature" ? "a signature" : "initials"} before saving.`);
+                return;
+              }
+              onSave({ id: uid(kind), kind, label: label.trim() || (kind === "signature" ? "Signature" : "Initials"), dataUrl });
             }}
           >
             Save
