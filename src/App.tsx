@@ -1445,6 +1445,16 @@ function App() {
     }
   };
 
+  const clearPlacementPreviews = useCallback(() => {
+    setPlacementPreview(null);
+    setImagePlacementPreview(null);
+  }, []);
+
+  useEffect(() => {
+    clearPlacementPreviews();
+    setEraserPreview(null);
+  }, [activeInitials, activeSignature, activeTabId, clearPlacementPreviews, tool]);
+
   const finishPagePointer = () => {
     if (activeDrawRef.current) {
       activeDrawRef.current = null;
@@ -2539,6 +2549,7 @@ function App() {
                 onPointerDown={handlePagePointerDown}
                 onPointerMove={handlePagePointerMove}
                 onPointerUp={finishPagePointer}
+                onPointerLeave={clearPlacementPreviews}
                 onAnnotationDrag={startAnnotationDrag}
                 onRemove={removeAnnotation}
                 onSelect={(id) => {
@@ -2852,6 +2863,7 @@ function PdfPage({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  onPointerLeave,
   onAnnotationDrag,
   onRemove,
   onSelect,
@@ -2883,6 +2895,7 @@ function PdfPage({
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: () => void;
+  onPointerLeave: () => void;
   onAnnotationDrag: (event: React.PointerEvent, annotation: Annotation, pageSize: PageSize, mode: "move" | "resize") => void;
   onRemove: (id: string) => void;
   onSelect: (id: string) => void;
@@ -2982,7 +2995,11 @@ function PdfPage({
         onPointerDown={(event) => onPointerDown(event, pageIndex)}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={() => {
+          onPointerUp();
+          onPointerLeave();
+        }}
+        onPointerLeave={onPointerLeave}
       >
         <canvas ref={canvasRef} style={{ width: displayWidth, height: displayHeight }} />
         <div className="annotationLayer">
