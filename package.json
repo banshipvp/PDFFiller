@@ -1,6 +1,6 @@
 {
   "name": "pdffiller",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "description": "A local desktop PDF filling and signing app.",
   "author": "Local",
   "private": true,
