@@ -1723,7 +1723,12 @@ function App() {
       form.updateFieldAppearances(font);
     }
 
-    for (const annotation of annotations) {
+    const exportAnnotations = [
+      ...annotations.filter((annotation) => annotation.type !== "signature" && annotation.type !== "initials"),
+      ...annotations.filter((annotation) => annotation.type === "signature" || annotation.type === "initials"),
+    ];
+
+    for (const annotation of exportAnnotations) {
       const page = pdf.getPage(annotation.page - 1);
       const { width, height } = page.getSize();
 
@@ -1734,6 +1739,7 @@ function App() {
           } catch {
             // Unsupported source fields are left as-is rather than duplicated.
           }
+          form.updateFieldAppearances(font);
           continue;
         }
         const field = form.createTextField(annotation.name || uid("Field"));
@@ -1747,6 +1753,7 @@ function App() {
           borderColor: rgb(0.37, 0.48, 0.61),
           backgroundColor: rgb(1, 1, 1),
         });
+        form.updateFieldAppearances(font);
         continue;
       }
 
@@ -1758,6 +1765,7 @@ function App() {
         } catch {
           // Unsupported button widgets are left intact.
         }
+        form.updateFieldAppearances(font);
         continue;
       }
 
@@ -1921,7 +1929,6 @@ function App() {
       }
     }
 
-    form.updateFieldAppearances(font);
     return pdf.save();
   };
 
@@ -2291,13 +2298,16 @@ function App() {
     setShowUpdateGate(false);
     setStartupReady(true);
   };
+  const downloadAndInstallUpdate = () => {
+    void window.pdfFillerDesktop?.downloadUpdate({ reopenPath: currentPath ?? pendingInitialPdfRef.current?.path ?? null });
+  };
 
   if (isDesktop && !startupReady) {
     return (
       <UpdateGate
         appVersion={appVersion}
         state={updateState}
-        onUpdate={() => void window.pdfFillerDesktop?.downloadUpdate()}
+        onUpdate={downloadAndInstallUpdate}
         onContinue={enterEditor}
       />
     );
@@ -2505,7 +2515,7 @@ function App() {
 
       <section className="workspace">
         <header className="topbar">
-          <div>
+          <div className="documentTitle">
             <strong>{pdfBytes ? fileName : "No PDF loaded"}</strong>
             <span>{status}</span>
           </div>
@@ -2569,6 +2579,7 @@ function App() {
                 lineZones={lineZones.filter((zone) => zone.page === index + 1)}
                 showTextZones={tool === "editText"}
                 showFillZones={tool === "text" || tool === "field"}
+                placementMode={["signature", "initials", "checkbox", "radio", "checkmark"].includes(tool)}
                 selectedId={selectedId}
                 editingId={editingId}
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
@@ -2811,7 +2822,7 @@ function App() {
         <UpdateGate
           appVersion={appVersion}
           state={updateState}
-          onUpdate={() => void window.pdfFillerDesktop?.downloadUpdate()}
+          onUpdate={downloadAndInstallUpdate}
           onContinue={enterEditor}
         />
       )}
@@ -2885,6 +2896,7 @@ function PdfPage({
   lineZones,
   showTextZones,
   showFillZones,
+  placementMode,
   selectedId,
   editingId,
   draftBox,
@@ -2917,6 +2929,7 @@ function PdfPage({
   lineZones: LineZone[];
   showTextZones: boolean;
   showFillZones: boolean;
+  placementMode: boolean;
   selectedId: string | null;
   editingId: string | null;
   draftBox: DraftBox | null;
@@ -3023,7 +3036,7 @@ function PdfPage({
     <article ref={setWrapRef} className={active ? "pageWrap active" : "pageWrap"} data-page={pageIndex + 1} onPointerEnter={onActive}>
       <div className="pageNumber">Page {pageIndex + 1}</div>
       <div
-        className="page"
+        className={placementMode ? "page placementMode" : "page"}
         data-page={pageIndex + 1}
         style={{ width: displayWidth, height: displayHeight }}
         onPointerDown={(event) => onPointerDown(event, pageIndex)}

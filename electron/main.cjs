@@ -21,6 +21,27 @@ function updateSettingsPath() {
   return path.join(app.getPath("userData"), "update-settings.json");
 }
 
+function reopenAfterUpdatePath() {
+  return path.join(app.getPath("userData"), "reopen-after-update.json");
+}
+
+async function rememberPdfForUpdate(filePath) {
+  if (!filePath || !/\.pdf$/i.test(filePath)) return;
+  await fs.mkdir(path.dirname(reopenAfterUpdatePath()), { recursive: true });
+  await fs.writeFile(reopenAfterUpdatePath(), JSON.stringify({ filePath }, null, 2));
+}
+
+async function consumePdfForUpdate() {
+  try {
+    const raw = await fs.readFile(reopenAfterUpdatePath(), "utf8");
+    await fs.unlink(reopenAfterUpdatePath()).catch(() => {});
+    const parsed = JSON.parse(raw);
+    return typeof parsed.filePath === "string" && /\.pdf$/i.test(parsed.filePath) ? parsed.filePath : null;
+  } catch {
+    return null;
+  }
+}
+
 async function getUpdateSettings() {
   try {
     const raw = await fs.readFile(updateSettingsPath(), "utf8");
@@ -200,9 +221,9 @@ if (!gotLock) {
     sendPdfToWindow(filePath);
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
-    pendingPdfPath = findPdfArg(process.argv);
+    pendingPdfPath = findPdfArg(process.argv) || await consumePdfForUpdate();
     createWindow();
     mainWindow.webContents.once("did-finish-load", () => {
       void checkForUpdates(false);
@@ -366,12 +387,13 @@ ipcMain.handle("desktop:check-for-updates", async () => {
   return checkForUpdates(true);
 });
 
-ipcMain.handle("desktop:download-update", async () => {
+ipcMain.handle("desktop:download-update", async (_event, payload = {}) => {
   if (isDev) {
     sendUpdateState({ phase: "development", status: "Updates are disabled while running in development mode.", version: "", percent: 0 });
     return { ok: false, reason: "development" };
   }
   try {
+    await rememberPdfForUpdate(payload.reopenPath || pendingPdfPath);
     sendUpdateState({ phase: "downloading", status: "Downloading update...", percent: 0 });
     await autoUpdater.downloadUpdate();
     return { ok: true };

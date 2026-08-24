@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld("pdfFillerDesktop", {
   getUpdateSettings: () => ipcRenderer.invoke("desktop:get-update-settings"),
   setUpdateSettings: (settings) => ipcRenderer.invoke("desktop:set-update-settings", settings),
   checkForUpdates: () => ipcRenderer.invoke("desktop:check-for-updates"),
-  downloadUpdate: () => ipcRenderer.invoke("desktop:download-update"),
+  downloadUpdate: (payload) => ipcRenderer.invoke("desktop:download-update", payload),
   onUpdaterStatus: (callback) => {
     const listener = (_event, status) => callback(status);
     ipcRenderer.on("updater-status", listener);

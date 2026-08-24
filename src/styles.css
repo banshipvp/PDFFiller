@@ -413,13 +413,27 @@ button:disabled {
   background: #fbfdff;
   border-bottom: 1px solid #cfd8e3;
   display: flex;
+  gap: 14px;
   justify-content: space-between;
+  min-width: 0;
   padding: 12px 20px;
 }
 
+.documentTitle {
+  min-width: 0;
+  overflow: hidden;
+}
+
 .topbar strong {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   display: block;
+  display: -webkit-box;
   font-size: 15px;
+  line-height: 1.18;
+  max-height: 36px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .topbar span,
@@ -428,9 +442,17 @@ button:disabled {
   font-size: 13px;
 }
 
+.topbar span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .topActions {
   align-items: center;
   display: flex;
+  flex: 0 0 auto;
   gap: 8px;
 }
 
@@ -560,6 +582,14 @@ button:disabled {
   display: flex;
   position: absolute;
   touch-action: none;
+}
+
+.page.placementMode .annotation,
+.page.placementMode .drawLayer path,
+.page.placementMode .textZone,
+.page.placementMode .formZone,
+.page.placementMode .lineZone {
+  pointer-events: none;
 }
 
 .annotation.selected {

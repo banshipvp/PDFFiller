@@ -30,7 +30,7 @@ interface Window {
     getUpdateSettings: () => Promise<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string; status: string; updateState: DesktopUpdateState }>;
     setUpdateSettings: (settings: Partial<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string }>) => Promise<{ enabled: boolean; provider: "github" | "generic"; githubRepo: string; feedUrl: string }>;
     checkForUpdates: () => Promise<{ ok: boolean; reason?: string }>;
-    downloadUpdate: () => Promise<{ ok: boolean; reason?: string }>;
+    downloadUpdate: (payload?: { reopenPath?: string | null }) => Promise<{ ok: boolean; reason?: string }>;
     onUpdaterStatus: (callback: (status: string) => void) => () => void;
     onUpdaterState: (callback: (state: DesktopUpdateState) => void) => () => void;
     onSaveBeforeClose: (callback: () => void) => () => void;
