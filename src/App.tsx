@@ -716,6 +716,7 @@ function App() {
   const historyRef = useRef<Annotation[][]>([]);
   const redoRef = useRef<Annotation[][]>([]);
   const lastAnnotationsRef = useRef<Annotation[]>([]);
+  const annotationsRef = useRef<Annotation[]>([]);
   const suppressHistoryRef = useRef(false);
   const loadedRef = useRef(false);
   const pageRefs = useRef<Record<number, HTMLElement | null>>({});
@@ -737,6 +738,8 @@ function App() {
     pageWidth: number;
     pageHeight: number;
   } | null>(null);
+  const dragStartAnnotationsRef = useRef<Annotation[] | null>(null);
+  const dragChangedRef = useRef(false);
   const activeDrawRef = useRef<string | null>(null);
   const activeEraseRef = useRef(false);
   const pendingInitialPdfRef = useRef<DesktopPdfPayload | null>(null);
@@ -991,6 +994,7 @@ function App() {
   }, [startupReady]);
 
   useEffect(() => {
+    annotationsRef.current = annotations;
     if (!loadedRef.current) {
       lastAnnotationsRef.current = annotations;
       return;
@@ -1015,6 +1019,7 @@ function App() {
     if (!previous) return;
     redoRef.current = [...redoRef.current, annotations];
     suppressHistoryRef.current = true;
+    annotationsRef.current = previous;
     setAnnotations(previous);
     setSelectedId(null);
     setEditingId(null);
@@ -1025,6 +1030,7 @@ function App() {
     if (!next) return;
     historyRef.current = [...historyRef.current, annotations];
     suppressHistoryRef.current = true;
+    annotationsRef.current = next;
     setAnnotations(next);
     setSelectedId(null);
     setEditingId(null);
@@ -1520,6 +1526,8 @@ function App() {
     event.stopPropagation();
     if (editingId === annotation.id && mode === "move") return;
     setSelectedId(annotation.id);
+    dragStartAnnotationsRef.current = annotationsRef.current;
+    dragChangedRef.current = false;
     dragRef.current = {
       id: annotation.id,
       mode,
@@ -1539,18 +1547,40 @@ function App() {
     const dx = (event.clientX - drag.startX) / drag.pageWidth;
     const dy = (event.clientY - drag.startY) / drag.pageHeight;
     const original = drag.original;
-    setAnnotations((current) =>
-      current.map((annotation) => {
+    dragChangedRef.current = true;
+    suppressHistoryRef.current = true;
+    setAnnotations((current) => {
+      const next = current.map((annotation) => {
         if (annotation.id !== drag.id || annotation.type === "draw") return annotation;
         if (drag.mode === "move") {
           return { ...annotation, x: clamp((original as BaseAnnotation).x + dx, 0, 0.98), y: clamp((original as BaseAnnotation).y + dy, 0, 0.98) } as Annotation;
         }
         return { ...annotation, w: clamp((original as BaseAnnotation).w + dx, 0.015, 1), h: clamp((original as BaseAnnotation).h + dy, 0.015, 1) } as Annotation;
-      }),
-    );
+      });
+      annotationsRef.current = next;
+      return next;
+    });
   }, []);
 
   const stopAnnotationDrag = useCallback(() => {
+    const beforeDrag = dragStartAnnotationsRef.current;
+    const afterDrag = annotationsRef.current;
+    if (beforeDrag && dragChangedRef.current) {
+      historyRef.current = [...historyRef.current.slice(-39), beforeDrag];
+      redoRef.current = [];
+      lastAnnotationsRef.current = afterDrag;
+      setIsDirty(true);
+      setTabs((current) =>
+        current.map((tab) =>
+          tab.id === activeTabIdRef.current
+            ? { ...tab, annotations: afterDrag, isDirty: true, history: historyRef.current, redo: redoRef.current }
+            : tab,
+        ),
+      );
+      void window.pdfFillerDesktop?.setDirty(true);
+    }
+    dragStartAnnotationsRef.current = null;
+    dragChangedRef.current = false;
     dragRef.current = null;
     window.removeEventListener("pointermove", moveAnnotation);
   }, [moveAnnotation]);
