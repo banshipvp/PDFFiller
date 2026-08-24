@@ -391,9 +391,10 @@ function isRectAnnotation(annotation: Annotation): annotation is RectAnnotation 
 }
 
 function eraseDrawingsAt(annotations: Annotation[], page: number, point: Point, radius = 0.024) {
-  let changed = false;
-  return annotations.flatMap<Annotation>((annotation) => {
+  let anyChanged = false;
+  const next = annotations.flatMap<Annotation>((annotation) => {
     if (annotation.type !== "draw" || annotation.page !== page) return [annotation];
+    let changed = false;
     const segments: Point[][] = [];
     let segment: Point[] = [];
     for (const candidate of annotation.points) {
@@ -408,12 +409,14 @@ function eraseDrawingsAt(annotations: Annotation[], page: number, point: Point, 
     }
     if (segment.length > 1) segments.push(segment);
     if (!changed) return [annotation];
+    anyChanged = true;
     return segments.map((points, index) => ({
       ...annotation,
       id: index === 0 ? annotation.id : uid("draw"),
       points,
     }));
   });
+  return anyChanged ? next : annotations;
 }
 
 function isChoiceAnnotation(annotation: Annotation): annotation is ChoiceAnnotation {
@@ -742,6 +745,8 @@ function App() {
   const dragChangedRef = useRef(false);
   const activeDrawRef = useRef<string | null>(null);
   const activeEraseRef = useRef(false);
+  const eraseStartAnnotationsRef = useRef<Annotation[] | null>(null);
+  const eraseChangedRef = useRef(false);
   const pendingInitialPdfRef = useRef<DesktopPdfPayload | null>(null);
   const ocrCancelRef = useRef(false);
   const analyzedPagesRef = useRef(new Set<number>());
@@ -1194,8 +1199,18 @@ function App() {
 
     if (tool === "eraser") {
       activeEraseRef.current = true;
+      eraseStartAnnotationsRef.current = annotationsRef.current;
+      eraseChangedRef.current = false;
       setEraserPreview({ page, x: point.x, y: point.y });
-      setAnnotations((current) => eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth));
+      setAnnotations((current) => {
+        const next = eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth);
+        if (next !== current) {
+          suppressHistoryRef.current = true;
+          eraseChangedRef.current = true;
+          annotationsRef.current = next;
+        }
+        return next;
+      });
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -1422,7 +1437,15 @@ function App() {
       const point = pagePoint(event, event.currentTarget);
       const page = Number(event.currentTarget.dataset.page);
       setEraserPreview({ page, x: point.x, y: point.y });
-      setAnnotations((current) => eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth));
+      setAnnotations((current) => {
+        const next = eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth);
+        if (next !== current) {
+          suppressHistoryRef.current = true;
+          eraseChangedRef.current = true;
+          annotationsRef.current = next;
+        }
+        return next;
+      });
       return;
     }
 
@@ -1469,7 +1492,27 @@ function App() {
     if (activeDrawRef.current) {
       activeDrawRef.current = null;
     }
+    if (activeEraseRef.current) {
+      const beforeErase = eraseStartAnnotationsRef.current;
+      const afterErase = annotationsRef.current;
+      if (beforeErase && eraseChangedRef.current) {
+        historyRef.current = [...historyRef.current.slice(-39), beforeErase];
+        redoRef.current = [];
+        lastAnnotationsRef.current = afterErase;
+        setIsDirty(true);
+        setTabs((current) =>
+          current.map((tab) =>
+            tab.id === activeTabIdRef.current
+              ? { ...tab, annotations: afterErase, isDirty: true, history: historyRef.current, redo: redoRef.current }
+              : tab,
+          ),
+        );
+        void window.pdfFillerDesktop?.setDirty(true);
+      }
+    }
     activeEraseRef.current = false;
+    eraseStartAnnotationsRef.current = null;
+    eraseChangedRef.current = false;
     setEraserPreview(null);
     if (!draftBox) return;
     const normalized = {
