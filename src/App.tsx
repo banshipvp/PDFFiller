@@ -75,7 +75,7 @@ type Tool =
 
 type PageSize = { width: number; height: number };
 type Point = { x: number; y: number };
-type BaseAnnotation = { id: string; page: number; x: number; y: number; w: number; h: number };
+type BaseAnnotation = { id: string; page: number; x: number; y: number; w: number; h: number; rotation?: number };
 
 type TextAnnotation = BaseAnnotation & {
   type: "text" | "date" | "comment" | "note" | "watermark" | "pageNumber" | "detectedText";
@@ -87,6 +87,8 @@ type TextAnnotation = BaseAnnotation & {
   opacity?: number;
   rotation?: number;
   repeat?: boolean;
+  repeatSpacingX?: number;
+  repeatSpacingY?: number;
 };
 
 type ImageAnnotation = BaseAnnotation & {
@@ -267,7 +269,7 @@ const primaryTools: Array<{ id: Tool; label: string; Icon: typeof MousePointer2 
   { id: "highlight", label: "Highlight", Icon: Highlighter },
   { id: "checkbox", label: "Checkbox", Icon: CheckSquare },
   { id: "checkmark", label: "Checkmark", Icon: Check },
-  { id: "radio", label: "Radio", Icon: Radio },
+  { id: "radio", label: "Radio choice", Icon: Radio },
   { id: "date", label: "Date", Icon: FileText },
   { id: "image", label: "Image", Icon: ImageIcon },
   { id: "comment", label: "Comment", Icon: MessageSquare },
@@ -773,14 +775,19 @@ function App() {
     clientY: number;
   } | null>(null);
   const imageUploadRef = useRef<HTMLInputElement | null>(null);
+  const draftBoxRef = useRef<DraftBox | null>(null);
+  const draftRawSizeRef = useRef<{ w: number; h: number } | null>(null);
   const dragRef = useRef<{
     id: string;
-    mode: "move" | "resize";
+    mode: "move" | "resize" | "rotate";
     startX: number;
     startY: number;
     original: Annotation;
     pageWidth: number;
     pageHeight: number;
+    centerX?: number;
+    centerY?: number;
+    startAngle?: number;
   } | null>(null);
   const dragStartAnnotationsRef = useRef<Annotation[] | null>(null);
   const dragChangedRef = useRef(false);
@@ -794,8 +801,9 @@ function App() {
   const analyzingPagesRef = useRef(new Set<number>());
   const activeTabIdRef = useRef<string | null>(null);
   const pdfDocRef = useRef<any>(null);
-  const savePdfRef = useRef<() => Promise<void>>(async () => undefined);
+  const savePdfRef = useRef<() => Promise<boolean>>(async () => false);
   const printPdfRef = useRef<() => Promise<void>>(async () => undefined);
+  const saveAndCloseRef = useRef<() => Promise<void>>(async () => undefined);
 
   const selected = useMemo(
     () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
@@ -806,6 +814,36 @@ function App() {
     activeTabIdRef.current = activeTabId;
     pdfDocRef.current = pdfDoc;
   }, [activeTabId, pdfDoc]);
+
+  useEffect(() => {
+    draftBoxRef.current = draftBox;
+  }, [draftBox]);
+
+  useEffect(() => {
+    const applyShiftConstraint = (constrained: boolean) => {
+      const current = draftBoxRef.current;
+      const raw = draftRawSizeRef.current;
+      if (!current || !raw || (current.type !== "circle" && current.type !== "rectangle")) return;
+      const size = Math.min(Math.abs(raw.w), Math.abs(raw.h));
+      setDraftBox({
+        ...current,
+        w: constrained ? Math.sign(raw.w || 1) * size : raw.w,
+        h: constrained ? Math.sign(raw.h || 1) * size : raw.h,
+      });
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Shift") applyShiftConstraint(true);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Shift") applyShiftConstraint(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+    };
+  }, []);
 
   const currentTabSnapshot = useCallback((id = activeTabId): PdfTabState | null => {
     if (!id || !pdfBytes || !pdfDoc) return null;
@@ -873,6 +911,7 @@ function App() {
   };
 
   const closeTab = (id: string) => {
+    const closingIndex = tabs.findIndex((tab) => tab.id === id);
     const snapshot = currentTabSnapshot();
     const nextTabs = (snapshot ? tabs.map((tab) => (tab.id === snapshot.id ? snapshot : tab)) : tabs).filter((tab) => tab.id !== id);
     setTabs(nextTabs);
@@ -880,7 +919,7 @@ function App() {
       void window.pdfFillerDesktop?.setDirty(nextTabs.some((tab) => tab.isDirty));
       return;
     }
-    const next = nextTabs[0] ?? null;
+    const next = nextTabs[Math.min(Math.max(closingIndex, 0), nextTabs.length - 1)] ?? null;
     if (next) {
       restoreTab(next);
       return;
@@ -1105,6 +1144,11 @@ function App() {
       if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "p") {
         event.preventDefault();
         void printPdfRef.current();
+        return;
+      }
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "w") {
+        event.preventDefault();
+        void saveAndCloseRef.current();
         return;
       }
       if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "z") {
@@ -1465,6 +1509,7 @@ function App() {
 
     if (["whiteout", "highlight", "circle", "rectangle", "line", "arrow"].includes(tool)) {
       const id = uid(tool);
+      draftRawSizeRef.current = { w: 0.001, h: 0.001 };
       setDraftBox({ id, page, type: tool as DraftBox["type"], x: point.x, y: point.y, w: 0.001, h: 0.001 });
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
@@ -1539,6 +1584,7 @@ function App() {
         if (!current) return null;
         let w = point.x - current.x;
         let h = point.y - current.y;
+        draftRawSizeRef.current = { w, h };
         if (event.shiftKey && (current.type === "circle" || current.type === "rectangle" || current.type === "whiteout" || current.type === "highlight")) {
           const size = Math.min(Math.abs(w), Math.abs(h));
           w = Math.sign(w || 1) * size;
@@ -1631,19 +1677,24 @@ function App() {
       strokeWidth: isShape ? shapeStrokeWidth : 2,
     });
     setDraftBox(null);
+    draftRawSizeRef.current = null;
   };
 
   const startAnnotationDrag = (
     event: React.PointerEvent,
     annotation: Annotation,
     pageSize: PageSize,
-    mode: "move" | "resize",
+    mode: "move" | "resize" | "rotate",
   ) => {
     event.stopPropagation();
     if (editingId === annotation.id && mode === "move") return;
     setSelectedId(annotation.id);
     dragStartAnnotationsRef.current = annotationsRef.current;
     dragChangedRef.current = false;
+    const annotationElement = (event.currentTarget as HTMLElement).closest(".annotation") as HTMLElement | null;
+    const rect = annotationElement?.getBoundingClientRect();
+    const centerX = rect ? rect.left + rect.width / 2 : undefined;
+    const centerY = rect ? rect.top + rect.height / 2 : undefined;
     dragRef.current = {
       id: annotation.id,
       mode,
@@ -1652,6 +1703,9 @@ function App() {
       original: annotation,
       pageWidth: pageSize.width * zoom,
       pageHeight: pageSize.height * zoom,
+      centerX,
+      centerY,
+      startAngle: centerX !== undefined && centerY !== undefined ? Math.atan2(event.clientY - centerY, event.clientX - centerX) : undefined,
     };
     window.addEventListener("pointermove", moveAnnotation);
     window.addEventListener("pointerup", stopAnnotationDrag, { once: true });
@@ -1670,6 +1724,11 @@ function App() {
         if (annotation.id !== drag.id || annotation.type === "draw") return annotation;
         if (drag.mode === "move") {
           return { ...annotation, x: clamp((original as BaseAnnotation).x + dx, 0, 0.98), y: clamp((original as BaseAnnotation).y + dy, 0, 0.98) } as Annotation;
+        }
+        if (drag.mode === "rotate" && drag.centerX !== undefined && drag.centerY !== undefined && drag.startAngle !== undefined) {
+          const angle = Math.atan2(event.clientY - drag.centerY, event.clientX - drag.centerX);
+          const delta = (angle - drag.startAngle) * 180 / Math.PI;
+          return { ...annotation, rotation: Math.round(((original as BaseAnnotation).rotation ?? 0) + delta) } as Annotation;
         }
         return { ...annotation, w: clamp((original as BaseAnnotation).w + dx, 0.015, 1), h: clamp((original as BaseAnnotation).h + dy, 0.015, 1) } as Annotation;
       });
@@ -1920,8 +1979,8 @@ function App() {
           const text = annotation.text || "WATERMARK";
           const size = annotation.fontSize;
           const textWidth = font.widthOfTextAtSize(text, size);
-          const gapX = Math.max(textWidth + 140, 240);
-          const gapY = Math.max(size * 4, 130);
+          const gapX = Math.max(textWidth + (annotation.repeatSpacingX ?? 140), textWidth + 20);
+          const gapY = Math.max(annotation.repeatSpacingY ?? 130, size * 1.5);
           for (let y = -height * 0.2; y < height * 1.25; y += gapY) {
             for (let x = -width * 0.1; x < width * 1.15; x += gapX) {
               page.drawText(text, {
@@ -1944,7 +2003,7 @@ function App() {
           font: annotation.bold ? boldFont : font,
           color: rgb(color.r, color.g, color.b),
           opacity,
-          rotate: annotation.type === "watermark" ? degrees(annotation.rotation ?? -35) : undefined,
+          rotate: annotation.rotation ? degrees(annotation.rotation) : annotation.type === "watermark" ? degrees(-35) : undefined,
           maxWidth: annotation.w * width,
           lineHeight: annotation.fontSize * 1.18,
         });
@@ -1958,6 +2017,7 @@ function App() {
           y: height - annotation.y * height - annotation.h * height,
           width: annotation.w * width,
           height: annotation.h * height,
+          rotate: annotation.rotation ? degrees(annotation.rotation) : undefined,
         });
       }
 
@@ -1983,6 +2043,7 @@ function App() {
           y: height - annotation.y * height - annotation.h * height,
           width: annotation.w * width,
           height: annotation.h * height,
+          rotate: annotation.rotation ? degrees(annotation.rotation) : undefined,
         };
         const filled = annotation.filled ?? !annotation.stroke;
         const outlined = annotation.outlined ?? Boolean(annotation.stroke);
@@ -2021,14 +2082,24 @@ function App() {
 
       if (annotation.type === "arrow" || annotation.type === "line") {
         const color = hexToRgb(annotation.color);
-        const start = {
+        let start = {
           x: (annotation.x + (annotation.reverseX ? annotation.w : 0)) * width,
           y: height - (annotation.y + (annotation.reverseY ? annotation.h : 0)) * height,
         };
-        const end = {
+        let end = {
           x: (annotation.x + (annotation.reverseX ? 0 : annotation.w)) * width,
           y: height - (annotation.y + (annotation.reverseY ? 0 : annotation.h)) * height,
         };
+        if (annotation.rotation) {
+          const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+          const radians = annotation.rotation * Math.PI / 180;
+          const rotatePoint = (point: Point) => ({
+            x: center.x + (point.x - center.x) * Math.cos(radians) - (point.y - center.y) * Math.sin(radians),
+            y: center.y + (point.x - center.x) * Math.sin(radians) + (point.y - center.y) * Math.cos(radians),
+          });
+          start = rotatePoint(start);
+          end = rotatePoint(end);
+        }
         page.drawLine({ start, end, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
         if (annotation.type === "arrow") {
           const angle = Math.atan2(end.y - start.y, end.x - start.x);
@@ -2100,7 +2171,7 @@ function App() {
 
   const savePdf = async () => {
     const output = await buildPdfBytes();
-    if (!output) return;
+    if (!output) return false;
     if (window.pdfFillerDesktop) {
       const result = await window.pdfFillerDesktop.savePdfFile({
         defaultName: currentPath ? fileName : fileName.replace(/\.pdf$/i, "") + "-filled.pdf",
@@ -2125,9 +2196,10 @@ function App() {
           return next;
         });
       }
-      return;
+      return !result.canceled;
     }
     await downloadPdf();
+    return true;
   };
 
   const printPdf = async () => {
@@ -2161,6 +2233,11 @@ function App() {
 
   savePdfRef.current = savePdf;
   printPdfRef.current = printPdf;
+  saveAndCloseRef.current = async () => {
+    const tabId = activeTabIdRef.current;
+    if (!tabId) return;
+    if (await savePdf()) closeTab(tabId);
+  };
 
   const savePdfBytes = async (bytes: Uint8Array, defaultName: string) => {
     if (window.pdfFillerDesktop) {
@@ -3117,7 +3194,7 @@ function PdfPage({
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: () => void;
   onPointerLeave: () => void;
-  onAnnotationDrag: (event: React.PointerEvent, annotation: Annotation, pageSize: PageSize, mode: "move" | "resize") => void;
+  onAnnotationDrag: (event: React.PointerEvent, annotation: Annotation, pageSize: PageSize, mode: "move" | "resize" | "rotate") => void;
   onRemove: (id: string) => void;
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
@@ -3327,7 +3404,7 @@ function AnnotationView({
   editing: boolean;
   pageSize: PageSize;
   zoom: number;
-  onDrag: (event: React.PointerEvent, annotation: Annotation, pageSize: PageSize, mode: "move" | "resize") => void;
+  onDrag: (event: React.PointerEvent, annotation: Annotation, pageSize: PageSize, mode: "move" | "resize" | "rotate") => void;
   onRemove: (id: string) => void;
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
@@ -3337,8 +3414,10 @@ function AnnotationView({
 
   useEffect(() => {
     if (!editing) return;
-    inputRef.current?.focus();
-    if ("select" in inputRef.current!) inputRef.current?.select();
+    const input = inputRef.current;
+    if (!input) return;
+    input.focus();
+    if ("select" in input) input.select();
   }, [editing]);
 
   if (annotation.type === "draw") {
@@ -3368,8 +3447,8 @@ function AnnotationView({
     top: `${annotation.y * 100}%`,
     width: `${annotation.w * 100}%`,
     height: `${annotation.h * 100}%`,
-    transform: annotation.type === "watermark" && !annotation.repeat ? `rotate(${annotation.rotation ?? -35}deg)` : undefined,
-    transformOrigin: annotation.type === "watermark" ? "center" : undefined,
+    transform: annotation.type === "watermark" && annotation.repeat ? undefined : `rotate(${annotation.rotation ?? 0}deg)`,
+    transformOrigin: "center",
   };
   const watermarkCopies = Array.from({ length: 24 });
 
@@ -3379,7 +3458,8 @@ function AnnotationView({
       style={{ ...style, pointerEvents: erasing ? "none" : undefined }}
       onDoubleClick={(event) => {
         event.stopPropagation();
-        onEdit(annotation.id);
+        if (isTextAnnotation(annotation) || annotation.type === "field") onEdit(annotation.id);
+        else onSelect(annotation.id);
       }}
       onPointerDown={(event) => onDrag(event, annotation, pageSize, "move")}
     >
@@ -3391,6 +3471,8 @@ function AnnotationView({
             fontSize: annotation.fontSize * zoom,
             fontWeight: annotation.bold ? 700 : 400,
             opacity: annotation.opacity ?? 0.22,
+            columnGap: annotation.repeatSpacingX ?? 140,
+            rowGap: annotation.repeatSpacingY ?? 130,
           }}
         >
           {watermarkCopies.map((_, index) => (
@@ -3473,6 +3555,7 @@ function AnnotationView({
       {selected && (
         <>
           <button className="deleteBubble" onClick={(event) => { event.stopPropagation(); onRemove(annotation.id); }} title="Delete"><Trash2 size={13} /></button>
+          <button className="rotateHandle" onPointerDown={(event) => onDrag(event, annotation, pageSize, "rotate")} title="Drag to rotate"><RotateCw size={12} /></button>
           <button className="resizeHandle" onPointerDown={(event) => onDrag(event, annotation, pageSize, "resize")} title="Resize" />
         </>
       )}
@@ -3491,15 +3574,9 @@ function ArrowOverlay({ color, width, arrow = true, reverseX = false, reverseY =
   }));
   return (
     <svg className="shapeOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
-      <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke={color} strokeWidth={width} vectorEffect="non-scaling-stroke" />
+      <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke={color} strokeWidth={width} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
       {arrow && (
-        <polyline
-          points={`${headPoints[0].x},${headPoints[0].y} ${end.x},${end.y} ${headPoints[1].x},${headPoints[1].y}`}
-          fill="none"
-          stroke={color}
-          strokeWidth={width}
-          vectorEffect="non-scaling-stroke"
-        />
+        <polygon points={`${end.x},${end.y} ${headPoints[0].x},${headPoints[0].y} ${headPoints[1].x},${headPoints[1].y}`} fill={color} />
       )}
     </svg>
   );
@@ -3556,6 +3633,12 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
   return (
     <div className="selectedTools">
       <span className="pill">{annotation.type}</span>
+      {annotation.type !== "draw" && annotation.type !== "watermark" && (
+        <>
+          <label>Rotation</label>
+          <SignedNumberInput value={annotation.rotation ?? 0} min={-180} max={180} onCommit={(rotation) => update({ rotation })} />
+        </>
+      )}
       {isTextAnnotation(annotation) && (
         <>
           <label>Text</label>
@@ -3569,7 +3652,7 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
               <label>Opacity</label>
               <input type="range" min="0.05" max="0.75" step="0.01" value={annotation.opacity ?? 0.22} onChange={(event) => update({ opacity: Number(event.target.value) })} />
               <label>Angle</label>
-              <input type="number" min="-90" max="90" value={annotation.rotation ?? -35} onChange={(event) => update({ rotation: Number(event.target.value) })} />
+              <SignedNumberInput value={annotation.rotation ?? -35} min={-180} max={180} onCommit={(rotation) => update({ rotation })} />
               <label className="checkRow">
                 <input
                   type="checkbox"
@@ -3578,6 +3661,14 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
                 />
                 Repeat across page
               </label>
+              {annotation.repeat && (
+                <>
+                  <label>Horizontal spacing</label>
+                  <input type="range" min="20" max="360" value={annotation.repeatSpacingX ?? 140} onChange={(event) => update({ repeatSpacingX: Number(event.target.value) })} />
+                  <label>Vertical spacing</label>
+                  <input type="range" min="30" max="300" value={annotation.repeatSpacingY ?? 130} onChange={(event) => update({ repeatSpacingY: Number(event.target.value) })} />
+                </>
+              )}
             </>
           )}
         </>
@@ -3648,6 +3739,30 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
       )}
       <button className="wideButton danger" onClick={remove}><Trash2 size={18} /> Delete Item</button>
     </div>
+  );
+}
+
+function SignedNumberInput({ value, min, max, onCommit }: { value: number; min: number; max: number; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+  const commit = () => {
+    const parsed = Number(draft);
+    if (Number.isFinite(parsed)) onCommit(clamp(parsed, min, max));
+    else setDraft(String(value));
+  };
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={draft}
+      onChange={(event) => {
+        if (/^-?\d*$/.test(event.target.value)) setDraft(event.target.value);
+      }}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
   );
 }
 
