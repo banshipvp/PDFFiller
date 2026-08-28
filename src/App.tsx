@@ -127,6 +127,8 @@ type ArrowAnnotation = BaseAnnotation & {
   type: "arrow" | "line";
   color: string;
   width: number;
+  reverseX?: boolean;
+  reverseY?: boolean;
 };
 
 type TableAnnotation = BaseAnnotation & {
@@ -417,6 +419,45 @@ function eraseDrawingsAt(annotations: Annotation[], page: number, point: Point, 
     }));
   });
   return anyChanged ? next : annotations;
+}
+
+function rotateAnnotation(annotation: Annotation, page: number, direction: -1 | 1): Annotation {
+  if (annotation.page !== page) return annotation;
+  if (annotation.type === "draw") {
+    return {
+      ...annotation,
+      points: annotation.points.map((point) => direction === 1
+        ? { x: 1 - point.y, y: point.x }
+        : { x: point.y, y: 1 - point.x }),
+    };
+  }
+  if (annotation.type === "arrow" || annotation.type === "line") {
+    const start = {
+      x: annotation.reverseX ? annotation.x + annotation.w : annotation.x,
+      y: annotation.reverseY ? annotation.y + annotation.h : annotation.y,
+    };
+    const end = {
+      x: annotation.reverseX ? annotation.x : annotation.x + annotation.w,
+      y: annotation.reverseY ? annotation.y : annotation.y + annotation.h,
+    };
+    const rotatePoint = (point: Point) => direction === 1
+      ? { x: 1 - point.y, y: point.x }
+      : { x: point.y, y: 1 - point.x };
+    const nextStart = rotatePoint(start);
+    const nextEnd = rotatePoint(end);
+    return {
+      ...annotation,
+      x: Math.min(nextStart.x, nextEnd.x),
+      y: Math.min(nextStart.y, nextEnd.y),
+      w: Math.abs(nextEnd.x - nextStart.x),
+      h: Math.abs(nextEnd.y - nextStart.y),
+      reverseX: nextStart.x > nextEnd.x,
+      reverseY: nextStart.y > nextEnd.y,
+    };
+  }
+  return direction === 1
+    ? { ...annotation, x: 1 - annotation.y - annotation.h, y: annotation.x, w: annotation.h, h: annotation.w }
+    : { ...annotation, x: annotation.y, y: 1 - annotation.x - annotation.w, w: annotation.h, h: annotation.w };
 }
 
 function isChoiceAnnotation(annotation: Annotation): annotation is ChoiceAnnotation {
@@ -753,6 +794,8 @@ function App() {
   const analyzingPagesRef = useRef(new Set<number>());
   const activeTabIdRef = useRef<string | null>(null);
   const pdfDocRef = useRef<any>(null);
+  const savePdfRef = useRef<() => Promise<void>>(async () => undefined);
+  const printPdfRef = useRef<() => Promise<void>>(async () => undefined);
 
   const selected = useMemo(
     () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
@@ -992,6 +1035,15 @@ function App() {
   }, [showUpdateGate, updateState.phase]);
 
   useEffect(() => {
+    if (startupReady || !showUpdateGate || updateState.phase !== "checking") return;
+    const timeout = window.setTimeout(() => {
+      setShowUpdateGate(false);
+      setStartupReady(true);
+    }, 8000);
+    return () => window.clearTimeout(timeout);
+  }, [showUpdateGate, startupReady, updateState.phase]);
+
+  useEffect(() => {
     if (!startupReady || !pendingInitialPdfRef.current) return;
     const payload = pendingInitialPdfRef.current;
     pendingInitialPdfRef.current = null;
@@ -1045,6 +1097,16 @@ function App() {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void savePdfRef.current();
+        return;
+      }
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        void printPdfRef.current();
+        return;
+      }
       if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         undo();
@@ -1167,6 +1229,13 @@ function App() {
       setStatus("Open a PDF before adding a watermark.");
       return;
     }
+    const existing = annotations.find((annotation) => annotation.page === page && annotation.type === "watermark");
+    if (existing) {
+      setSelectedId(existing.id);
+      setEditingId(existing.id);
+      setStatus("This page already has a watermark. The existing watermark is selected for editing.");
+      return;
+    }
     createTextAnnotation(page, { x: 0.18, y: 0.42 }, {
       type: "watermark",
       text: "WATERMARK",
@@ -1198,12 +1267,13 @@ function App() {
     );
 
     if (tool === "eraser") {
+      const eraserRadius = eraserSize / Math.max(event.currentTarget.clientWidth, 1);
       activeEraseRef.current = true;
       eraseStartAnnotationsRef.current = annotationsRef.current;
       eraseChangedRef.current = false;
       setEraserPreview({ page, x: point.x, y: point.y });
       setAnnotations((current) => {
-        const next = eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth);
+        const next = eraseDrawingsAt(current, page, point, eraserRadius);
         if (next !== current) {
           suppressHistoryRef.current = true;
           eraseChangedRef.current = true;
@@ -1436,9 +1506,10 @@ function App() {
     if (tool === "eraser" && activeEraseRef.current) {
       const point = pagePoint(event, event.currentTarget);
       const page = Number(event.currentTarget.dataset.page);
+      const eraserRadius = eraserSize / Math.max(event.currentTarget.clientWidth, 1);
       setEraserPreview({ page, x: point.x, y: point.y });
       setAnnotations((current) => {
-        const next = eraseDrawingsAt(current, page, point, eraserSize / event.currentTarget.clientWidth);
+        const next = eraseDrawingsAt(current, page, point, eraserRadius);
         if (next !== current) {
           suppressHistoryRef.current = true;
           eraseChangedRef.current = true;
@@ -1532,6 +1603,8 @@ function App() {
         h: clamp(normalized.h || 0.05, 0.01, 1),
         color: shapeStrokeColor,
         width: shapeStrokeWidth,
+        reverseX: draftBox.w < 0,
+        reverseY: draftBox.h < 0,
       });
       setDraftBox(null);
       return;
@@ -1948,12 +2021,29 @@ function App() {
 
       if (annotation.type === "arrow" || annotation.type === "line") {
         const color = hexToRgb(annotation.color);
-        const start = { x: annotation.x * width, y: height - annotation.y * height - annotation.h * height };
-        const end = { x: annotation.x * width + annotation.w * width, y: height - annotation.y * height };
+        const start = {
+          x: (annotation.x + (annotation.reverseX ? annotation.w : 0)) * width,
+          y: height - (annotation.y + (annotation.reverseY ? annotation.h : 0)) * height,
+        };
+        const end = {
+          x: (annotation.x + (annotation.reverseX ? 0 : annotation.w)) * width,
+          y: height - (annotation.y + (annotation.reverseY ? 0 : annotation.h)) * height,
+        };
         page.drawLine({ start, end, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
         if (annotation.type === "arrow") {
-          page.drawLine({ start: end, end: { x: end.x - 12, y: end.y - 4 }, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
-          page.drawLine({ start: end, end: { x: end.x - 5, y: end.y - 12 }, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
+          const angle = Math.atan2(end.y - start.y, end.x - start.x);
+          const headLength = 12;
+          for (const offset of [-Math.PI / 6, Math.PI / 6]) {
+            page.drawLine({
+              start: end,
+              end: {
+                x: end.x - headLength * Math.cos(angle + offset),
+                y: end.y - headLength * Math.sin(angle + offset),
+              },
+              thickness: annotation.width,
+              color: rgb(color.r, color.g, color.b),
+            });
+          }
         }
       }
 
@@ -2013,14 +2103,24 @@ function App() {
     if (!output) return;
     if (window.pdfFillerDesktop) {
       const result = await window.pdfFillerDesktop.savePdfFile({
-        defaultName: fileName.replace(/\.pdf$/i, "") + "-filled.pdf",
+        defaultName: currentPath ? fileName : fileName.replace(/\.pdf$/i, "") + "-filled.pdf",
+        targetPath: currentPath,
         bytes: Array.from(output),
       });
-      if (!result.canceled && result.filePath) setStatus(`Saved ${result.filePath}`);
+      if (!result.canceled && result.filePath) {
+        setCurrentPath(result.filePath);
+        setFileName(result.filePath.split(/[\\/]/).pop() || fileName);
+        setStatus(`Saved ${result.filePath}`);
+      }
       if (!result.canceled) {
         setIsDirty(false);
         setTabs((current) => {
-          const next = current.map((tab) => (tab.id === activeTabId ? { ...tab, isDirty: false } : tab));
+          const next = current.map((tab) => (tab.id === activeTabId ? {
+            ...tab,
+            currentPath: result.filePath ?? tab.currentPath,
+            fileName: result.filePath?.split(/[\\/]/).pop() || tab.fileName,
+            isDirty: false,
+          } : tab));
           void window.pdfFillerDesktop?.setDirty(next.some((tab) => tab.isDirty));
           return next;
         });
@@ -2058,6 +2158,9 @@ function App() {
       });
     }
   };
+
+  savePdfRef.current = savePdf;
+  printPdfRef.current = printPdf;
 
   const savePdfBytes = async (bytes: Uint8Array, defaultName: string) => {
     if (window.pdfFillerDesktop) {
@@ -2211,7 +2314,7 @@ function App() {
     const current = page.getRotation().angle;
     page.setRotation(degrees((current + direction * 90 + 360) % 360));
     const bytes = await pdf.save();
-    const preservedAnnotations = annotations;
+    const preservedAnnotations = annotations.map((annotation) => rotateAnnotation(annotation, activePage, direction));
     await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
     setAnnotations(preservedAnnotations);
     setStatus(`Rotated page ${activePage} ${direction === 1 ? "right" : "left"}.`);
@@ -2641,6 +2744,7 @@ function App() {
                 showTextZones={tool === "editText"}
                 showFillZones={tool === "text" || tool === "field"}
                 placementMode={["signature", "initials", "checkbox", "radio", "checkmark"].includes(tool)}
+                erasing={tool === "eraser"}
                 selectedId={selectedId}
                 editingId={editingId}
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
@@ -2649,6 +2753,8 @@ function App() {
                 eraserPreview={eraserPreview?.page === index + 1 ? eraserPreview : null}
                 eraserSize={eraserSize}
                 eraserOpacity={eraserOpacity}
+                shapeStrokeColor={shapeStrokeColor}
+                shapeStrokeWidth={shapeStrokeWidth}
                 onPageRef={(node) => {
                   pageRefs.current[index + 1] = node;
                 }}
@@ -2838,6 +2944,7 @@ function App() {
       </main>
       {mergeOpen && (
         <MergeModal
+          currentFile={pdfBytes ? new File([pdfBytes.slice(0)], fileName, { type: "application/pdf", lastModified: 0 }) : null}
           onClose={() => setMergeOpen(false)}
           onMerge={(files) => void mergePdfFiles(files)}
         />
@@ -2903,7 +3010,7 @@ function UpdateGate({
   onContinue: () => void;
 }) {
   const canUpdate = state.phase === "available";
-  const canContinue = ["available", "error", "disabled", "development"].includes(state.phase);
+  const canContinue = ["checking", "available", "error", "disabled", "development"].includes(state.phase);
   const busy = state.phase === "checking" || state.phase === "downloading" || state.phase === "downloaded";
   const title =
     state.phase === "available"
@@ -2958,6 +3065,7 @@ function PdfPage({
   showTextZones,
   showFillZones,
   placementMode,
+  erasing,
   selectedId,
   editingId,
   draftBox,
@@ -2966,6 +3074,8 @@ function PdfPage({
   eraserPreview,
   eraserSize,
   eraserOpacity,
+  shapeStrokeColor,
+  shapeStrokeWidth,
   onPageRef,
   onPointerDown,
   onPointerMove,
@@ -2991,6 +3101,7 @@ function PdfPage({
   showTextZones: boolean;
   showFillZones: boolean;
   placementMode: boolean;
+  erasing: boolean;
   selectedId: string | null;
   editingId: string | null;
   draftBox: DraftBox | null;
@@ -2999,6 +3110,8 @@ function PdfPage({
   eraserPreview: { page: number; x: number; y: number } | null;
   eraserSize: number;
   eraserOpacity: number;
+  shapeStrokeColor: string;
+  shapeStrokeWidth: number;
   onPageRef: (node: HTMLElement | null) => void;
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -3118,6 +3231,7 @@ function PdfPage({
             <AnnotationView
               key={annotation.id}
               annotation={annotation}
+              erasing={erasing}
               selected={selectedId === annotation.id}
               editing={editingId === annotation.id}
               pageSize={pageSize}
@@ -3138,7 +3252,17 @@ function PdfPage({
                 width: `${Math.abs(draftBox.w) * 100}%`,
                 height: `${Math.abs(draftBox.h) * 100}%`,
               }}
-            />
+            >
+              {(draftBox.type === "line" || draftBox.type === "arrow") && (
+                <ArrowOverlay
+                  color={shapeStrokeColor}
+                  width={shapeStrokeWidth}
+                  arrow={draftBox.type === "arrow"}
+                  reverseX={draftBox.w < 0}
+                  reverseY={draftBox.h < 0}
+                />
+              )}
+            </div>
           )}
           {placementPreview && (
             <div
@@ -3186,6 +3310,7 @@ function PdfPage({
 
 function AnnotationView({
   annotation,
+  erasing,
   selected,
   editing,
   pageSize,
@@ -3197,6 +3322,7 @@ function AnnotationView({
   onUpdate,
 }: {
   annotation: Annotation;
+  erasing: boolean;
   selected: boolean;
   editing: boolean;
   pageSize: PageSize;
@@ -3220,7 +3346,7 @@ function AnnotationView({
       .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x * pageSize.width * zoom} ${point.y * pageSize.height * zoom}`)
       .join(" ");
     return (
-      <svg className="drawLayer" viewBox={`0 0 ${pageSize.width * zoom} ${pageSize.height * zoom}`}>
+      <svg className="drawLayer" viewBox={`0 0 ${pageSize.width * zoom} ${pageSize.height * zoom}`} style={{ pointerEvents: erasing ? "none" : undefined }}>
         <path
           d={path}
           fill="none"
@@ -3250,7 +3376,7 @@ function AnnotationView({
   return (
     <div
       className={`annotation ${annotation.type} ${selected ? "selected" : ""} ${editing ? "editing" : ""}`}
-      style={style}
+      style={{ ...style, pointerEvents: erasing ? "none" : undefined }}
       onDoubleClick={(event) => {
         event.stopPropagation();
         onEdit(annotation.id);
@@ -3321,7 +3447,15 @@ function AnnotationView({
           {annotation.type === "radio" ? (annotation.checked ? "o" : "") : annotation.checked ? (annotation.mark === "check" ? "✓" : "X") : ""}
         </span>
       )}
-      {(annotation.type === "arrow" || annotation.type === "line") && <ArrowOverlay color={annotation.color} width={annotation.width} arrow={annotation.type === "arrow"} />}
+      {(annotation.type === "arrow" || annotation.type === "line") && (
+        <ArrowOverlay
+          color={annotation.color}
+          width={annotation.width}
+          arrow={annotation.type === "arrow"}
+          reverseX={annotation.reverseX}
+          reverseY={annotation.reverseY}
+        />
+      )}
       {annotation.type === "table" && (
         <TableOverlay
           rows={annotation.rows}
@@ -3346,11 +3480,27 @@ function AnnotationView({
   );
 }
 
-function ArrowOverlay({ color, width, arrow = true }: { color: string; width: number; arrow?: boolean }) {
+function ArrowOverlay({ color, width, arrow = true, reverseX = false, reverseY = false }: { color: string; width: number; arrow?: boolean; reverseX?: boolean; reverseY?: boolean }) {
+  const start = { x: reverseX ? 96 : 4, y: reverseY ? 96 : 4 };
+  const end = { x: reverseX ? 4 : 96, y: reverseY ? 4 : 96 };
+  const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const headLength = 18;
+  const headPoints = [-Math.PI / 6, Math.PI / 6].map((offset) => ({
+    x: end.x - headLength * Math.cos(angle + offset),
+    y: end.y - headLength * Math.sin(angle + offset),
+  }));
   return (
-    <svg className="shapeOverlay" viewBox="0 0 100 40" preserveAspectRatio="none">
-      <line x1="4" y1="34" x2="92" y2="6" stroke={color} strokeWidth={width} />
-      {arrow && <polyline points="78,4 92,6 83,18" fill="none" stroke={color} strokeWidth={width} />}
+    <svg className="shapeOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke={color} strokeWidth={width} vectorEffect="non-scaling-stroke" />
+      {arrow && (
+        <polyline
+          points={`${headPoints[0].x},${headPoints[0].y} ${end.x},${end.y} ${headPoints[1].x},${headPoints[1].y}`}
+          fill="none"
+          stroke={color}
+          strokeWidth={width}
+          vectorEffect="non-scaling-stroke"
+        />
+      )}
     </svg>
   );
 }
@@ -3671,8 +3821,8 @@ function OcrReviewModal({
   );
 }
 
-function MergeModal({ onClose, onMerge }: { onClose: () => void; onMerge: (files: File[]) => void }) {
-  const [files, setFiles] = useState<File[]>([]);
+function MergeModal({ currentFile, onClose, onMerge }: { currentFile: File | null; onClose: () => void; onMerge: (files: File[]) => void }) {
+  const [files, setFiles] = useState<File[]>(() => currentFile ? [currentFile] : []);
   const [pageCounts, setPageCounts] = useState<Record<string, number>>({});
   const inputRef = useRef<HTMLInputElement | null>(null);
 
@@ -3731,7 +3881,14 @@ function MergeModal({ onClose, onMerge }: { onClose: () => void; onMerge: (files
           type="file"
           accept="application/pdf"
           multiple
-          onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+          onChange={(event) => {
+            const selected = Array.from(event.target.files ?? []);
+            setFiles((current) => {
+              const known = new Set(current.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
+              return [...current, ...selected.filter((file) => !known.has(`${file.name}:${file.size}:${file.lastModified}`))];
+            });
+            event.currentTarget.value = "";
+          }}
         />
         <button className="wideButton" onClick={() => inputRef.current?.click()}>
           <Plus size={18} />

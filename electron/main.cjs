@@ -286,6 +286,11 @@ ipcMain.handle("desktop:open-default-app-settings", async () => {
 });
 
 ipcMain.handle("desktop:save-pdf-file", async (_event, payload) => {
+  if (payload.targetPath) {
+    await fs.writeFile(payload.targetPath, Buffer.from(payload.bytes));
+    lastPdfPath = payload.targetPath;
+    return { canceled: false, filePath: payload.targetPath };
+  }
   const result = await dialog.showSaveDialog(mainWindow, {
     title: "Save PDF",
     defaultPath: payload.defaultName || "filled.pdf",
@@ -293,6 +298,7 @@ ipcMain.handle("desktop:save-pdf-file", async (_event, payload) => {
   });
   if (result.canceled || !result.filePath) return { canceled: true };
   await fs.writeFile(result.filePath, Buffer.from(payload.bytes));
+  lastPdfPath = result.filePath;
   return { canceled: false, filePath: result.filePath };
 });
 

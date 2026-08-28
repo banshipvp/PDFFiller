@@ -802,19 +802,6 @@ button:disabled {
   border: 0;
 }
 
-.draftBox.line::before,
-.draftBox.arrow::before {
-  background: #2563eb;
-  content: "";
-  height: 2px;
-  left: 0;
-  position: absolute;
-  top: 50%;
-  transform: rotate(-18deg);
-  transform-origin: left center;
-  width: 100%;
-}
-
 .eraserPreview {
   background: #2563eb;
   border: 2px solid #1d4ed8;
