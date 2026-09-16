@@ -1,8 +1,13 @@
 import {
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
   BookOpen,
   Check,
   CheckSquare,
+  ChevronDown,
+  ChevronsDown,
+  ChevronsUp,
   Circle,
   Columns3,
   Download,
@@ -307,7 +312,7 @@ const featureGroups = [
 ];
 
 const topMenus = [
-  { title: "Home", items: ["Open PDF", "Save", "Print"] },
+  { title: "Home", items: ["Open PDF", "Save", "Save As", "Print"] },
   { title: "Tools", items: ["Merge PDFs", "Split PDF", "Extract PDF pages", "Delete PDF pages", "Add page numbers", "Compress PDF", "Organize Pages"] },
   { title: "Convert", items: ["PDF to JPEG", "JPEG to PDF", "Word to PDF", "PDF to Word"] },
   { title: "Edit", items: ["Edit PDF", "Check Text", "Add Text", "Add Images", "Erase", "Watermark", "Number PDF pages"] },
@@ -465,6 +470,21 @@ function rotateAnnotation(annotation: Annotation, page: number, direction: -1 | 
 function isChoiceAnnotation(annotation: Annotation): annotation is ChoiceAnnotation {
   return ["checkbox", "radio", "checkmark"].includes(annotation.type);
 }
+
+function groupByPage<T extends { page: number }>(items: T[]) {
+  const groups = new Map<number, T[]>();
+  for (const item of items) {
+    const group = groups.get(item.page);
+    if (group) group.push(item);
+    else groups.set(item.page, [item]);
+  }
+  return groups;
+}
+
+const emptyAnnotations: Annotation[] = [];
+const emptyTextZones: TextZone[] = [];
+const emptyFormZones: FormZone[] = [];
+const emptyLineZones: LineZone[] = [];
 
 function hasSourceFieldName(annotation: Annotation): annotation is (FieldAnnotation | ChoiceAnnotation) & { sourceFieldName: string } {
   return (annotation.type === "field" || isChoiceAnnotation(annotation)) && Boolean(annotation.sourceFieldName);
@@ -747,6 +767,7 @@ function App() {
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
+  const [organizeOpen, setOrganizeOpen] = useState(false);
   const [removePagesOpen, setRemovePagesOpen] = useState(false);
   const [extractPagesOpen, setExtractPagesOpen] = useState(false);
   const [ocrResult, setOcrResult] = useState<OcrResult | null>(null);
@@ -809,6 +830,10 @@ function App() {
     () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
     [annotations, selectedId],
   );
+  const annotationsByPage = useMemo(() => groupByPage(annotations), [annotations]);
+  const textZonesByPage = useMemo(() => groupByPage(textZones), [textZones]);
+  const formZonesByPage = useMemo(() => groupByPage(formZones), [formZones]);
+  const lineZonesByPage = useMemo(() => groupByPage(lineZones), [lineZones]);
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
@@ -2169,19 +2194,30 @@ function App() {
     setStatus("Exported PDF.");
   };
 
-  const savePdf = async () => {
+  const savePdf = async (mode: "save" | "saveAs" = "save") => {
     const output = await buildPdfBytes();
     if (!output) return false;
+    const defaultName = currentPath && mode === "save" ? fileName : fileName.replace(/\.pdf$/i, "") + "-filled.pdf";
     if (window.pdfFillerDesktop) {
       const result = await window.pdfFillerDesktop.savePdfFile({
-        defaultName: currentPath ? fileName : fileName.replace(/\.pdf$/i, "") + "-filled.pdf",
-        targetPath: currentPath,
+        defaultName,
+        title: mode === "saveAs" ? "Save PDF As" : "Save PDF",
+        targetPath: mode === "save" ? currentPath : null,
+        protectedPath: mode === "saveAs" ? currentPath : null,
         bytes: Array.from(output),
       });
-      if (!result.canceled && result.filePath) {
+      if (result.blocked) {
+        setStatus(result.reason || "Choose a different file name so the original PDF is not overwritten.");
+        return false;
+      }
+      if (result.canceled) {
+        setStatus("Save canceled.");
+        return false;
+      }
+      if (result.filePath) setStatus(`Saved ${result.filePath}. You can keep editing placed text in this window.`);
+      if (result.filePath) {
         setCurrentPath(result.filePath);
         setFileName(result.filePath.split(/[\\/]/).pop() || fileName);
-        setStatus(`Saved ${result.filePath}`);
       }
       if (!result.canceled) {
         setIsDirty(false);
@@ -2198,7 +2234,16 @@ function App() {
       }
       return !result.canceled;
     }
-    await downloadPdf();
+    const outputBuffer = new ArrayBuffer(output.byteLength);
+    new Uint8Array(outputBuffer).set(output);
+    const blob = new Blob([outputBuffer], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = defaultName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setStatus(`${mode === "saveAs" ? "Saved as" : "Saved"} ${defaultName}. You can keep editing placed text in this window.`);
     return true;
   };
 
@@ -2397,6 +2442,61 @@ function App() {
     setStatus(`Rotated page ${activePage} ${direction === 1 ? "right" : "left"}.`);
   };
 
+  const organizeCurrentPages = async (order: number[]) => {
+    if (!pdfBytes || order.length !== pageSizes.length) {
+      setStatus("Open a PDF before organizing pages.");
+      return;
+    }
+    const uniquePages = new Set(order);
+    const validOrder = order.every((page) => Number.isInteger(page) && page >= 1 && page <= pageSizes.length);
+    if (!validOrder || uniquePages.size !== pageSizes.length) {
+      setStatus("Page order is invalid.");
+      return;
+    }
+    const changed = order.some((page, index) => page !== index + 1);
+    if (!changed) {
+      setOrganizeOpen(false);
+      setStatus("Page order unchanged.");
+      return;
+    }
+
+    setStatus("Reordering pages...");
+    const pageMap = new Map(order.map((oldPage, index) => [oldPage, index + 1]));
+    const nextAnnotations = annotations.map((annotation) => {
+      const nextPage = pageMap.get(annotation.page) ?? annotation.page;
+      const next = { ...annotation, page: nextPage } as Annotation;
+      if (next.type === "pageNumber") next.text = String(nextPage);
+      return next;
+    });
+    const activeIndex = order.indexOf(activePage);
+    const nextActivePage = activeIndex >= 0 ? activeIndex + 1 : 1;
+
+    const source = await PDFDocument.load(pdfBytes.slice(0));
+    const output = await PDFDocument.create();
+    const pages = await output.copyPages(source, order.map((page) => page - 1));
+    pages.forEach((page) => output.addPage(page));
+    const bytes = await output.save();
+
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
+    suppressHistoryRef.current = true;
+    lastAnnotationsRef.current = nextAnnotations;
+    annotationsRef.current = nextAnnotations;
+    setAnnotations(nextAnnotations);
+    setActivePage(nextActivePage);
+    setIsDirty(true);
+    setTabs((current) => {
+      const nextTabs = current.map((tab) => (
+        tab.id === activeTabId
+          ? { ...tab, annotations: nextAnnotations, activePage: nextActivePage, isDirty: true, status: "Pages reordered." }
+          : tab
+      ));
+      void window.pdfFillerDesktop?.setDirty(nextTabs.some((tab) => tab.isDirty));
+      return nextTabs;
+    });
+    setOrganizeOpen(false);
+    setStatus("Pages reordered.");
+  };
+
   const addPageNumbers = () => {
     if (!pageSizes.length) return;
     setAnnotations((current) => [
@@ -2422,13 +2522,14 @@ function App() {
     setActiveMenu(null);
     if (item === "Open PDF") document.getElementById("pdf-upload")?.click();
     if (item === "Save") void savePdf();
+    if (item === "Save As") void savePdf("saveAs");
     if (item === "Print") void printPdf();
     if (item === "Merge PDFs") setMergeOpen(true);
     if (item === "Split PDF" || item === "Split") setSplitOpen(true);
     if (item === "Extract PDF pages") setExtractPagesOpen(true);
     if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") setRemovePagesOpen(true);
     if (item === "Rotate PDF" || item === "Rotate PDF pages") void rotateActivePage();
-    if (item === "Organize Pages") setStatus("Use Split, Extract, Delete, or the rotate buttons to organize pages.");
+    if (item === "Organize Pages") setOrganizeOpen(true);
     if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
     if (item === "Check Text") void checkTextOnActivePage();
@@ -2572,7 +2673,7 @@ function App() {
                 onClick={() => setActiveMenu((current) => (current === menu.title ? null : menu.title))}
               >
                 {menu.title}
-                {menu.title !== "Home" && <span>⌄</span>}
+                {menu.title !== "Home" && <ChevronDown size={14} />}
               </button>
               {activeMenu === menu.title && (
                 <div className="menuDropdown">
@@ -2728,6 +2829,10 @@ function App() {
           <Save size={18} />
           Save
         </button>
+        <button className="wideButton" disabled={!pdfBytes} onClick={() => void savePdf("saveAs")}>
+          <FilePlus2 size={18} />
+          Save As
+        </button>
         <button className="wideButton" disabled={!pdfBytes} onClick={() => void downloadPdf()}>
           <Download size={18} />
           Export
@@ -2735,6 +2840,10 @@ function App() {
         <button className="wideButton" disabled={!pdfBytes} onClick={() => void printPdf()}>
           <Printer size={18} />
           Print
+        </button>
+        <button className="wideButton" disabled={!pdfBytes || pageSizes.length < 2} onClick={() => setOrganizeOpen(true)}>
+          <Columns3 size={18} />
+          Organize Pages
         </button>
 
         {pdfDoc && (
@@ -2814,10 +2923,10 @@ function App() {
                 pageSize={pageSize}
                 zoom={zoom}
                 active={activePage === index + 1}
-                annotations={annotations.filter((annotation) => annotation.page === index + 1)}
-                textZones={textZones.filter((zone) => zone.page === index + 1)}
-                formZones={formZones.filter((zone) => zone.page === index + 1)}
-                lineZones={lineZones.filter((zone) => zone.page === index + 1)}
+                annotations={annotationsByPage.get(index + 1) ?? emptyAnnotations}
+                textZones={textZonesByPage.get(index + 1) ?? emptyTextZones}
+                formZones={formZonesByPage.get(index + 1) ?? emptyFormZones}
+                lineZones={lineZonesByPage.get(index + 1) ?? emptyLineZones}
                 showTextZones={tool === "editText"}
                 showFillZones={tool === "text" || tool === "field"}
                 placementMode={["signature", "initials", "checkbox", "radio", "checkmark"].includes(tool)}
@@ -3032,6 +3141,15 @@ function App() {
           onSplit={(file, ranges) => void splitPdfFile(file, ranges)}
         />
       )}
+      {organizeOpen && pdfDoc && (
+        <OrganizePagesModal
+          doc={pdfDoc}
+          fileName={fileName}
+          pageCount={pageSizes.length}
+          onClose={() => setOrganizeOpen(false)}
+          onApply={(order) => void organizeCurrentPages(order)}
+        />
+      )}
       {removePagesOpen && (
         <RemovePagesModal
           onClose={() => setRemovePagesOpen(false)}
@@ -3205,12 +3323,14 @@ function PdfPage({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLElement | null>(null);
   const [shouldRender, setShouldRender] = useState(false);
+  const [isRendered, setIsRendered] = useState(false);
 
   useEffect(() => {
     if (!shouldRender) return;
     let cancelled = false;
     let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
     const render = async () => {
+      setIsRendered(false);
       const page = await doc.getPage(pageIndex + 1);
       const viewport = page.getViewport({ scale: zoom });
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
@@ -3241,6 +3361,7 @@ function PdfPage({
       visible.height = scratch.height;
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.drawImage(scratch, 0, 0);
+      setIsRendered(true);
     };
     void render();
     return () => {
@@ -3251,6 +3372,7 @@ function PdfPage({
 
   useEffect(() => {
     setShouldRender(false);
+    setIsRendered(false);
   }, [doc, pageIndex]);
 
   useEffect(() => {
@@ -3299,7 +3421,8 @@ function PdfPage({
         }}
         onPointerLeave={onPointerLeave}
       >
-        <canvas ref={canvasRef} style={{ width: displayWidth, height: displayHeight }} />
+        <canvas ref={canvasRef} className={isRendered ? "pdfCanvas ready" : "pdfCanvas"} style={{ width: displayWidth, height: displayHeight }} />
+        {!isRendered && <div className="pageLoading" aria-hidden="true" />}
         <div className="annotationLayer">
           {showFillZones && formZones.map((zone) => <div key={zone.id} className="formZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title={zone.name} />)}
           {showFillZones && lineZones.map((zone) => <div key={zone.id} className="lineZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title="Click to fill" />)}
@@ -3600,8 +3723,39 @@ function TableOverlay({ rows, cols, color, cells, editable, onCellChange }: { ro
 
 function Thumbnail({ doc, page, pageSize, active, onClick }: { doc: any; page: number; pageSize: PageSize; active: boolean; onClick: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rootRef = useRef<HTMLButtonElement | null>(null);
+  const [shouldRender, setShouldRender] = useState(active);
+
   useEffect(() => {
+    if (active) setShouldRender(true);
+  }, [active]);
+
+  useEffect(() => {
+    if (shouldRender) return;
+    const node = rootRef.current;
+    if (!node) return;
+    if (!("IntersectionObserver" in window)) {
+      setShouldRender(true);
+      return;
+    }
+    const root = node.closest(".rail");
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldRender(true);
+          observer.disconnect();
+        }
+      },
+      { root, rootMargin: "800px 0px", threshold: 0 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [shouldRender]);
+
+  useEffect(() => {
+    if (!shouldRender) return;
     let cancelled = false;
+    let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
     const render = async () => {
       const pdfPage = await doc.getPage(page);
       const scale = 110 / pageSize.width;
@@ -3614,15 +3768,24 @@ function Thumbnail({ doc, page, pageSize, active, onClick }: { doc: any; page: n
       canvas.height = viewport.height;
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      await pdfPage.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
+      const task = pdfPage.render({ canvasContext: context, viewport, background: "#ffffff" });
+      renderTask = task;
+      try {
+        await task.promise;
+      } catch (error) {
+        if (!cancelled && !(error instanceof Error && error.name === "RenderingCancelledException")) {
+          console.warn("Thumbnail render failed", error);
+        }
+      }
     };
     void render();
     return () => {
       cancelled = true;
+      renderTask?.cancel();
     };
-  }, [doc, page, pageSize.width]);
+  }, [doc, page, pageSize.width, shouldRender]);
   return (
-    <button className={active ? "thumbnail active" : "thumbnail"} onClick={onClick}>
+    <button ref={rootRef} className={active ? "thumbnail active" : "thumbnail"} onClick={onClick}>
       <canvas ref={canvasRef} />
       <span>{page}</span>
     </button>
@@ -4032,7 +4195,33 @@ function MergeModal({ currentFile, onClose, onMerge }: { currentFile: File | nul
   );
 }
 
-function ToolPdfThumbnail({ doc, page, selected, onClick }: { doc: any; page: number; selected?: boolean; onClick?: () => void }) {
+function ToolPdfThumbnail({
+  doc,
+  page,
+  selected,
+  onClick,
+  label,
+  children,
+  className = "",
+  draggable,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+}: {
+  doc: any;
+  page: number;
+  selected?: boolean;
+  onClick?: () => void;
+  label?: string;
+  children?: React.ReactNode;
+  className?: string;
+  draggable?: boolean;
+  onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragOver?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDrop?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd?: (event: React.DragEvent<HTMLButtonElement>) => void;
+}) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -4055,11 +4244,167 @@ function ToolPdfThumbnail({ doc, page, selected, onClick }: { doc: any; page: nu
     };
   }, [doc, page]);
 
+  const classes = ["toolPageThumb", selected ? "selected" : "", className].filter(Boolean).join(" ");
+
   return (
-    <button className={selected ? "toolPageThumb selected" : "toolPageThumb"} onClick={onClick} type="button">
+    <button
+      className={classes}
+      draggable={draggable}
+      onClick={onClick}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      type="button"
+    >
       <canvas ref={canvasRef} />
-      <span>Page {page}</span>
+      <span>{label ?? `Page ${page}`}</span>
+      {children}
     </button>
+  );
+}
+
+function OrganizePagesModal({
+  doc,
+  fileName,
+  pageCount,
+  onClose,
+  onApply,
+}: {
+  doc: any;
+  fileName: string;
+  pageCount: number;
+  onClose: () => void;
+  onApply: (order: number[]) => void;
+}) {
+  const [order, setOrder] = useState(() => Array.from({ length: pageCount }, (_, index) => index + 1));
+  const [selectedPage, setSelectedPage] = useState(1);
+  const draggedPageRef = useRef<number | null>(null);
+  const changed = order.some((page, index) => page !== index + 1);
+  const selectedIndex = order.indexOf(selectedPage);
+
+  useEffect(() => {
+    setOrder(Array.from({ length: pageCount }, (_, index) => index + 1));
+    setSelectedPage(1);
+  }, [pageCount]);
+
+  const movePageToIndex = (page: number, nextIndex: number) => {
+    setOrder((current) => {
+      const fromIndex = current.indexOf(page);
+      if (fromIndex < 0) return current;
+      const boundedIndex = clamp(nextIndex, 0, current.length - 1);
+      if (fromIndex === boundedIndex) return current;
+      const next = [...current];
+      const [item] = next.splice(fromIndex, 1);
+      next.splice(boundedIndex, 0, item);
+      return next;
+    });
+    setSelectedPage(page);
+  };
+
+  const moveSelected = (direction: -1 | 1) => {
+    if (selectedIndex < 0) return;
+    movePageToIndex(selectedPage, selectedIndex + direction);
+  };
+
+  const moveDroppedPage = (targetPage: number) => {
+    const draggedPage = draggedPageRef.current;
+    draggedPageRef.current = null;
+    if (!draggedPage || draggedPage === targetPage) return;
+    setOrder((current) => {
+      const targetIndex = current.indexOf(targetPage);
+      if (targetIndex < 0) return current;
+      const next = current.filter((page) => page !== draggedPage);
+      const insertIndex = next.indexOf(targetPage);
+      next.splice(insertIndex, 0, draggedPage);
+      return next;
+    });
+    setSelectedPage(draggedPage);
+  };
+
+  return (
+    <div className="modalBackdrop" role="dialog" aria-modal="true">
+      <div className="toolWorkflowModal">
+        <header>
+          <div>
+            <h2>Organize Pages</h2>
+            <p className="muted">Move pages into the order you need before saving or exporting.</p>
+          </div>
+          <div className="modalActions">
+            <button onClick={onClose}>Cancel</button>
+            <button className="primaryAction" disabled={!changed} onClick={() => onApply(order)}>
+              Apply order
+            </button>
+          </div>
+        </header>
+
+        <div className="toolWorkflowGrid">
+          <section className="toolPreviewArea">
+            <div className="workflowTitleRow">
+              <strong>{fileName}</strong>
+              <button className="wideButton" disabled={!changed} onClick={() => setOrder(Array.from({ length: pageCount }, (_, index) => index + 1))}>
+                Reset order
+              </button>
+            </div>
+            <div className="organizePageGrid">
+              {order.map((page, index) => (
+                <ToolPdfThumbnail
+                  key={page}
+                  doc={doc}
+                  page={page}
+                  selected={selectedPage === page}
+                  label={`Page ${page}`}
+                  className="organizeThumb"
+                  draggable
+                  onClick={() => setSelectedPage(page)}
+                  onDragStart={(event) => {
+                    draggedPageRef.current = page;
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", String(page));
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    moveDroppedPage(page);
+                  }}
+                  onDragEnd={() => {
+                    draggedPageRef.current = null;
+                  }}
+                >
+                  <small>Position {index + 1}</small>
+                </ToolPdfThumbnail>
+              ))}
+            </div>
+          </section>
+
+          <aside className="toolSidePanel">
+            <h3>Move pages</h3>
+            <div className="infoPanel compact">Select a page, use the move buttons, or drag a thumbnail before another page.</div>
+            <p className="toolMeta">Selected page: {selectedPage}</p>
+            <button className="wideButton" disabled={selectedIndex <= 0} onClick={() => movePageToIndex(selectedPage, 0)}>
+              <ChevronsUp size={18} />
+              Move to top
+            </button>
+            <button className="wideButton" disabled={selectedIndex <= 0} onClick={() => moveSelected(-1)}>
+              <ArrowUp size={18} />
+              Move up
+            </button>
+            <button className="wideButton" disabled={selectedIndex < 0 || selectedIndex >= order.length - 1} onClick={() => moveSelected(1)}>
+              <ArrowDown size={18} />
+              Move down
+            </button>
+            <button className="wideButton" disabled={selectedIndex < 0 || selectedIndex >= order.length - 1} onClick={() => movePageToIndex(selectedPage, order.length - 1)}>
+              <ChevronsDown size={18} />
+              Move to bottom
+            </button>
+            <p className="toolMeta">New order: {order.join(", ")}</p>
+          </aside>
+        </div>
+      </div>
+    </div>
   );
 }
 

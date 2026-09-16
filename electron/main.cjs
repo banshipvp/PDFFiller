@@ -292,11 +292,25 @@ ipcMain.handle("desktop:save-pdf-file", async (_event, payload) => {
     return { canceled: false, filePath: payload.targetPath };
   }
   const result = await dialog.showSaveDialog(mainWindow, {
-    title: "Save PDF",
+    title: payload.title || "Save PDF",
     defaultPath: payload.defaultName || "filled.pdf",
     filters: [{ name: "PDF Document", extensions: ["pdf"] }],
   });
   if (result.canceled || !result.filePath) return { canceled: true };
+  if (payload.protectedPath) {
+    const selectedPath = path.resolve(result.filePath);
+    const protectedPath = path.resolve(payload.protectedPath);
+    const sameFile = process.platform === "win32"
+      ? selectedPath.toLowerCase() === protectedPath.toLowerCase()
+      : selectedPath === protectedPath;
+    if (sameFile) {
+      return {
+        canceled: true,
+        blocked: true,
+        reason: "Choose a different file name so the original PDF is not overwritten.",
+      };
+    }
+  }
   await fs.writeFile(result.filePath, Buffer.from(payload.bytes));
   lastPdfPath = result.filePath;
   return { canceled: false, filePath: result.filePath };
