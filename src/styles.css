@@ -735,7 +735,6 @@ textarea:focus {
   touch-action: none;
 }
 
-.page.placementMode .annotation,
 .page.placementMode .drawLayer path,
 .page.placementMode .textZone,
 .page.placementMode .formZone,
@@ -1015,6 +1014,15 @@ textarea:focus {
   border-radius: 999px;
 }
 
+.placementPreview.date {
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 13px;
+  font-weight: 600;
+  justify-content: flex-start;
+  padding: 2px 5px;
+  white-space: nowrap;
+}
+
 .imagePlacementPreview {
   opacity: 0.72;
   pointer-events: none;
@@ -1078,6 +1086,30 @@ textarea:focus {
 .inspector textarea {
   min-height: 104px;
   resize: vertical;
+}
+
+.assetPreview {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #ccd6e2;
+  border-radius: 7px;
+  display: flex;
+  height: 72px;
+  justify-content: center;
+  margin-top: 7px;
+  overflow: hidden;
+  padding: 8px;
+}
+
+.assetPreview img {
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.assetPreview.empty {
+  color: #64748b;
+  font-size: 12px;
 }
 
 .colorRow {
@@ -1206,6 +1238,29 @@ textarea:focus {
   position: fixed;
   z-index: 20;
   animation: backdropIn var(--motion-standard);
+}
+
+.modalCard.confirmModal {
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  max-width: 440px;
+  padding: 22px;
+  width: 100%;
+}
+
+.confirmModal h2 {
+  font-size: 20px;
+  margin: 0 0 8px;
+}
+
+.confirmModal p {
+  color: #475569;
+  margin: 0 0 20px;
+}
+
+.confirmModal .modalActions {
+  justify-content: flex-end;
 }
 
 .updateGate {

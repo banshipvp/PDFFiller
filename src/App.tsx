@@ -328,6 +328,14 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function formatAustralianDate(date = new Date()) {
+  return new Intl.DateTimeFormat("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
+}
+
+function isConstrainedShape(type: DraftBox["type"]) {
+  return ["circle", "rectangle", "whiteout", "highlight"].includes(type);
+}
+
 function hexToRgb(hex: string) {
   const clean = hex.replace("#", "");
   const int = parseInt(clean, 16);
@@ -775,6 +783,7 @@ function App() {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrError, setOcrError] = useState("");
   const [isDirty, setIsDirty] = useState(false);
+  const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
   const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
   const [imagePlacementPreview, setImagePlacementPreview] = useState<{ page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null>(null);
   const [eraserPreview, setEraserPreview] = useState<{ page: number; x: number; y: number } | null>(null);
@@ -848,7 +857,7 @@ function App() {
     const applyShiftConstraint = (constrained: boolean) => {
       const current = draftBoxRef.current;
       const raw = draftRawSizeRef.current;
-      if (!current || !raw || (current.type !== "circle" && current.type !== "rectangle")) return;
+      if (!current || !raw || !isConstrainedShape(current.type)) return;
       const size = Math.min(Math.abs(raw.w), Math.abs(raw.h));
       setDraftBox({
         ...current,
@@ -958,6 +967,9 @@ function App() {
     setTextZones([]);
     setFormZones([]);
     setLineZones([]);
+    suppressHistoryRef.current = true;
+    loadedRef.current = false;
+    lastAnnotationsRef.current = [];
     setAnnotations([]);
     analyzedPagesRef.current = new Set();
     analyzingPagesRef.current = new Set();
@@ -966,6 +978,20 @@ function App() {
     setIsDirty(false);
     setStatus("Ready");
     void window.pdfFillerDesktop?.setDirty(false);
+  };
+
+  const requestCloseTab = (id: string) => {
+    const snapshot = currentTabSnapshot();
+    const currentTabs = snapshot ? tabs.map((tab) => (tab.id === snapshot.id ? snapshot : tab)) : tabs;
+    const target = currentTabs.find((tab) => tab.id === id);
+    if (!target) return;
+    setTabs(currentTabs);
+    if (!target.isDirty) {
+      closeTab(id);
+      return;
+    }
+    if (id !== activeTabId) restoreTab(target);
+    setPendingCloseTabId(id);
   };
 
   const loadPdfBytes = async (bytes: ArrayBuffer, name: string, sourcePath: string | null = null, options: { replaceActive?: boolean } = {}) => {
@@ -1078,7 +1104,9 @@ function App() {
       setShowUpdateGate(true);
     });
     const removeSaveBeforeCloseListener = window.pdfFillerDesktop.onSaveBeforeClose(() => {
-      void savePdf().then(() => window.pdfFillerDesktop?.closeAfterSave());
+      void savePdfRef.current().then((saved) => {
+        if (saved) void window.pdfFillerDesktop?.closeAfterSave();
+      });
     });
     return () => {
       removeOpenListener();
@@ -1322,6 +1350,7 @@ function App() {
 
   const handlePagePointerDown = (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => {
     if (!pdfDoc) return;
+    if ((event.target as HTMLElement).closest(".annotation")) return;
     const point = pagePoint(event, event.currentTarget);
     const page = pageIndex + 1;
     setActivePage(page);
@@ -1461,7 +1490,7 @@ function App() {
 
     if (["date", "comment", "note", "pageNumber"].includes(tool)) {
       const pageText = tool === "pageNumber" ? `${page}` : "";
-      const dateText = new Date().toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
+      const dateText = formatAustralianDate();
       createTextAnnotation(page, point, {
         type: tool as TextAnnotation["type"],
         text: tool === "date" ? dateText : pageText,
@@ -1474,7 +1503,7 @@ function App() {
       return;
     }
 
-    if (["checkbox", "radio", "checkmark"].includes(tool)) {
+    if (["date", "checkbox", "radio", "checkmark"].includes(tool)) {
       const size = tool === "checkmark" ? 0.035 : 0.032;
       addAnnotation({
         id: uid(tool),
@@ -2704,13 +2733,13 @@ function App() {
               tabIndex={0}
               onClick={(event) => {
                 event.stopPropagation();
-                closeTab(tab.id);
+                requestCloseTab(tab.id);
               }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
                   event.stopPropagation();
-                  closeTab(tab.id);
+                  requestCloseTab(tab.id);
                 }
               }}
               title="Close tab"
@@ -2929,7 +2958,7 @@ function App() {
                 lineZones={lineZonesByPage.get(index + 1) ?? emptyLineZones}
                 showTextZones={tool === "editText"}
                 showFillZones={tool === "text" || tool === "field"}
-                placementMode={["signature", "initials", "checkbox", "radio", "checkmark"].includes(tool)}
+                placementMode={["date", "signature", "initials", "checkbox", "radio", "checkmark"].includes(tool)}
                 erasing={tool === "eraser"}
                 selectedId={selectedId}
                 editingId={editingId}
@@ -2994,11 +3023,13 @@ function App() {
             <option value="">None saved</option>
             {selectedSignatureAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.label}</option>)}
           </select>
+          <AssetPreview asset={selectedSignatureAssets.find((asset) => asset.id === activeSignature)} emptyLabel="No signature selected" />
           <label>Initials</label>
           <select value={activeInitials} onChange={(event) => setActiveInitials(event.target.value)}>
             <option value="">None saved</option>
             {selectedInitialAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.label}</option>)}
           </select>
+          <AssetPreview asset={selectedInitialAssets.find((asset) => asset.id === activeInitials)} emptyLabel="No initials selected" />
         </section>
 
         <section>
@@ -3114,6 +3145,41 @@ function App() {
         )}
 
       </aside>
+
+      {pendingCloseTabId && (
+        <div className="modalBackdrop" role="dialog" aria-modal="true" aria-labelledby="close-tab-title">
+          <div className="modalCard confirmModal">
+            <h2 id="close-tab-title">Save changes?</h2>
+            <p>You have unsaved changes in {fileName}.</p>
+            <div className="modalActions">
+              <button onClick={() => setPendingCloseTabId(null)}>Cancel</button>
+              <button
+                className="dangerAction"
+                onClick={() => {
+                  const id = pendingCloseTabId;
+                  setPendingCloseTabId(null);
+                  closeTab(id);
+                }}
+              >
+                Discard
+              </button>
+              <button
+                className="primaryAction"
+                onClick={() => {
+                  const id = pendingCloseTabId;
+                  void savePdf().then((saved) => {
+                    if (!saved) return;
+                    setPendingCloseTabId(null);
+                    closeTab(id);
+                  });
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {signatureModal && (
         <SignatureModal
@@ -3243,6 +3309,14 @@ function UpdateGate({
           {busy && <span className="updateSpinner" />}
         </div>
       </section>
+    </div>
+  );
+}
+
+function AssetPreview({ asset, emptyLabel }: { asset?: SignatureAsset; emptyLabel: string }) {
+  return (
+    <div className={asset ? "assetPreview" : "assetPreview empty"}>
+      {asset ? <img src={asset.dataUrl} alt={`${asset.label} preview`} /> : <span>{emptyLabel}</span>}
     </div>
   );
 }
@@ -3460,6 +3534,8 @@ function PdfPage({
                   arrow={draftBox.type === "arrow"}
                   reverseX={draftBox.w < 0}
                   reverseY={draftBox.h < 0}
+                  boxWidth={Math.max(Math.abs(draftBox.w) * pageSize.width * zoom, 1)}
+                  boxHeight={Math.max(Math.abs(draftBox.h) * pageSize.height * zoom, 1)}
                 />
               )}
             </div>
@@ -3468,13 +3544,13 @@ function PdfPage({
             <div
               className={`placementPreview ${placementPreview.tool}`}
               style={{
-                left: `${(placementPreview.x - 0.017) * 100}%`,
-                top: `${(placementPreview.y - 0.017) * 100}%`,
-                width: "3.4%",
-                height: "3.4%",
+                left: `${(placementPreview.x - (placementPreview.tool === "date" ? 0 : 0.017)) * 100}%`,
+                top: `${(placementPreview.y - (placementPreview.tool === "date" ? 0 : 0.017)) * 100}%`,
+                width: placementPreview.tool === "date" ? "24%" : "3.4%",
+                height: placementPreview.tool === "date" ? "4.5%" : "3.4%",
               }}
             >
-              {placementPreview.tool === "radio" ? "o" : placementPreview.tool === "checkbox" ? "☑" : "✓"}
+              {placementPreview.tool === "date" ? formatAustralianDate() : placementPreview.tool === "radio" ? "o" : placementPreview.tool === "checkbox" ? "☑" : "✓"}
             </div>
           )}
           {imagePlacementPreview && (
@@ -3659,6 +3735,8 @@ function AnnotationView({
           arrow={annotation.type === "arrow"}
           reverseX={annotation.reverseX}
           reverseY={annotation.reverseY}
+          boxWidth={Math.max(annotation.w * pageSize.width * zoom, 1)}
+          boxHeight={Math.max(annotation.h * pageSize.height * zoom, 1)}
         />
       )}
       {annotation.type === "table" && (
@@ -3686,20 +3764,24 @@ function AnnotationView({
   );
 }
 
-function ArrowOverlay({ color, width, arrow = true, reverseX = false, reverseY = false }: { color: string; width: number; arrow?: boolean; reverseX?: boolean; reverseY?: boolean }) {
-  const start = { x: reverseX ? 96 : 4, y: reverseY ? 96 : 4 };
-  const end = { x: reverseX ? 4 : 96, y: reverseY ? 4 : 96 };
+function ArrowOverlay({ color, width, arrow = true, reverseX = false, reverseY = false, boxWidth = 100, boxHeight = 100 }: { color: string; width: number; arrow?: boolean; reverseX?: boolean; reverseY?: boolean; boxWidth?: number; boxHeight?: number }) {
+  const safeWidth = Math.max(boxWidth, 1);
+  const safeHeight = Math.max(boxHeight, 1);
+  const pad = Math.min(6, Math.max(1, Math.min(safeWidth, safeHeight) * 0.1));
+  const start = { x: reverseX ? safeWidth - pad : pad, y: reverseY ? safeHeight - pad : pad };
+  const end = { x: reverseX ? pad : safeWidth - pad, y: reverseY ? pad : safeHeight - pad };
   const angle = Math.atan2(end.y - start.y, end.x - start.x);
-  const headLength = 18;
-  const headPoints = [-Math.PI / 6, Math.PI / 6].map((offset) => ({
+  const lineLength = Math.hypot(end.x - start.x, end.y - start.y);
+  const headLength = Math.min(Math.max(width * 4, 8), 18, lineLength * 0.35);
+  const headPoints = [-Math.PI / 7, Math.PI / 7].map((offset) => ({
     x: end.x - headLength * Math.cos(angle + offset),
     y: end.y - headLength * Math.sin(angle + offset),
   }));
   return (
-    <svg className="shapeOverlay" viewBox="0 0 100 100" preserveAspectRatio="none">
+    <svg className="shapeOverlay" viewBox={`0 0 ${safeWidth} ${safeHeight}`} preserveAspectRatio="none">
       <line x1={start.x} y1={start.y} x2={end.x} y2={end.y} stroke={color} strokeWidth={width} strokeLinecap="round" vectorEffect="non-scaling-stroke" />
       {arrow && (
-        <polygon points={`${end.x},${end.y} ${headPoints[0].x},${headPoints[0].y} ${headPoints[1].x},${headPoints[1].y}`} fill={color} />
+        <polyline points={`${headPoints[0].x},${headPoints[0].y} ${end.x},${end.y} ${headPoints[1].x},${headPoints[1].y}`} fill="none" stroke={color} strokeWidth={width} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       )}
     </svg>
   );
