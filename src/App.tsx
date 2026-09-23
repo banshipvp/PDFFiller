@@ -1462,7 +1462,6 @@ function App() {
         w: zone?.w ?? 0.28,
         h: zone?.h ?? 0.045,
         fontSize: zone ? clamp(zone.fontSize, 8, 28) : 14,
-        background: "#ffffff",
       });
       return;
     }
@@ -1840,7 +1839,6 @@ function App() {
         color: palette.ink,
         fontSize: clamp(zone.fontSize, 7, 28),
         bold: false,
-        background: "#ffffff",
     }));
     setAnnotations((current) => [...current, ...imports]);
     setStatus("Editable text boxes added.");
@@ -2017,7 +2015,7 @@ function App() {
       const { width, height } = page.getSize();
 
       if (isTextAnnotation(annotation)) {
-        if (annotation.background) {
+        if (annotation.background && annotation.type !== "detectedText") {
           page.drawRectangle({
             x: annotation.x * width,
             y: height - annotation.y * height - annotation.h * height,
@@ -3690,10 +3688,10 @@ function AnnotationView({
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onUpdate(annotation.id, { text: event.target.value })}
             onBlur={() => undefined}
-            style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.background ?? "transparent", opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}
+            style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.type === "detectedText" ? "transparent" : annotation.background ?? "transparent", opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}
           />
         ) : (
-          <div className="textAnnotation" style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.background, opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}>
+          <div className="textAnnotation" style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.type === "detectedText" ? "transparent" : annotation.background, opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}>
             {annotation.text || "Type here"}
           </div>
         )
