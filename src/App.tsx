@@ -6,6 +6,8 @@ import {
   Check,
   CheckSquare,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronsDown,
   ChevronsUp,
   Circle,
@@ -21,6 +23,7 @@ import {
   MessageSquare,
   Minus,
   MousePointer2,
+  PanelRight,
   PenLine,
   Plus,
   Printer,
@@ -41,14 +44,16 @@ import {
   Undo2,
   Upload,
   Wand2,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { PDFCheckBox, PDFDocument, PDFTextField, degrees, rgb, StandardFonts } from "pdf-lib";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnnotationMode, GlobalWorkerOptions, OPS, Util, getDocument } from "pdfjs-dist";
+import { LineCapStyle, PDFCheckBox, PDFDocument, PDFRadioGroup, PDFTextField, clip, concatTransformationMatrix, degrees, endPath, popGraphicsState, pushGraphicsState, rectangle, rgb, StandardFonts } from "pdf-lib";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AnnotationMode, GlobalWorkerOptions, Util, getDocument, type PDFDocumentProxy } from "pdfjs-dist";
 import Tesseract from "tesseract.js";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { detectFillZones, nearbyCheckboxLabel, type DetectedFillZone, type FormTextRun } from "./formDetection";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -94,6 +99,7 @@ type TextAnnotation = BaseAnnotation & {
   repeat?: boolean;
   repeatSpacingX?: number;
   repeatSpacingY?: number;
+  detectedField?: { id: string; label: string };
 };
 
 type ImageAnnotation = BaseAnnotation & {
@@ -128,6 +134,11 @@ type ChoiceAnnotation = BaseAnnotation & {
   checked: boolean;
   mark?: "check" | "x";
   sourceFieldName?: string;
+  sourceOption?: string;
+  sourceLabel?: string;
+  originalChecked?: boolean;
+  readOnly?: boolean;
+  detectedField?: { id: string; label: string };
 };
 
 type ArrowAnnotation = BaseAnnotation & {
@@ -152,6 +163,8 @@ type FieldAnnotation = BaseAnnotation & {
   value: string;
   fontSize: number;
   sourceFieldName?: string;
+  multiline?: boolean;
+  readOnly?: boolean;
 };
 
 type Annotation =
@@ -192,16 +205,6 @@ type TextZone = BaseAnnotation & {
   fontSize: number;
 };
 
-type FormZone = BaseAnnotation & {
-  name: string;
-  fieldType: string;
-  value?: string;
-};
-
-type LineZone = BaseAnnotation & {
-  source: "line";
-};
-
 type PdfTabState = {
   id: string;
   fileName: string;
@@ -210,14 +213,15 @@ type PdfTabState = {
   pdfDoc: any;
   pageSizes: PageSize[];
   textZones: TextZone[];
-  formZones: FormZone[];
-  lineZones: LineZone[];
+  fillZones: DetectedFillZone[];
   annotations: Annotation[];
   selectedId: string | null;
   editingId: string | null;
   zoom: number;
   activePage: number;
+  scroll?: { top: number; left: number };
   isDirty: boolean;
+  savedAnnotations: Annotation[] | null;
   status: string;
   history: Annotation[][];
   redo: Annotation[][];
@@ -236,8 +240,7 @@ type OcrResult = {
 
 type PageAnalysis = {
   textZones: TextZone[];
-  formZones: FormZone[];
-  lineZones: LineZone[];
+  fillZones: DetectedFillZone[];
   annotations: Annotation[];
 };
 
@@ -262,7 +265,7 @@ const signatureFonts: SignatureFont[] = [
 ];
 
 const primaryTools: Array<{ id: Tool; label: string; Icon: typeof MousePointer2 }> = [
-  { id: "select", label: "Select", Icon: MousePointer2 },
+  { id: "select", label: "Select & fill", Icon: MousePointer2 },
   { id: "text", label: "Add text", Icon: Type },
   { id: "editText", label: "Edit text", Icon: Wand2 },
   { id: "field", label: "Text field", Icon: FileText },
@@ -288,37 +291,19 @@ const primaryTools: Array<{ id: Tool; label: string; Icon: typeof MousePointer2 
   { id: "pageNumber", label: "Page number", Icon: BookOpen },
 ];
 
-const featureGroups = [
-  {
-    title: "Edit",
-    items: ["Edit PDF", "Replace text", "Add text fields", "Add text", "Add images", "Erase", "Watermark", "Check spelling", "Add page numbers", "Add checkmarks", "Insert tables", "Add radio buttons", "Add dates"],
-  },
-  {
-    title: "Annotate",
-    items: ["Markup PDF", "Highlight", "Add comments", "Add arrows", "Add notes", "Add circles", "Type on PDF"],
-  },
-  {
-    title: "Forms",
-    items: ["Form builder", "Fill out and sign", "Create fillable forms", "Remove fields", "Populate forms", "Add checkboxes"],
-  },
-  {
-    title: "Manage",
-    items: ["Organize pages", "Insert pages", "Merge documents", "Split", "Rearrange and rotate", "Remove pages", "Compress", "Protect PDF"],
-  },
-  {
-    title: "Convert",
-    items: ["PDF to JPEG", "JPEG to PDF", "Word/PPT/Excel conversion needs a conversion engine"],
-  },
+const toolGroups: Array<{ title: string; tools: Tool[] }> = [
+  { title: "Fill & sign", tools: ["select", "text", "field", "checkmark", "checkbox", "radio", "signature", "initials", "date"] },
+  { title: "Edit", tools: ["editText", "image", "whiteout", "table", "watermark", "pageNumber"] },
+  { title: "Markup", tools: ["highlight", "draw", "eraser", "comment", "note", "line", "arrow", "circle", "rectangle"] },
 ];
 
 const topMenus = [
-  { title: "Home", items: ["Open PDF", "Save", "Save As", "Print"] },
-  { title: "Tools", items: ["Merge PDFs", "Split PDF", "Extract PDF pages", "Delete PDF pages", "Add page numbers", "Compress PDF", "Organize Pages"] },
-  { title: "Convert", items: ["PDF to JPEG", "JPEG to PDF", "Word to PDF", "PDF to Word"] },
-  { title: "Edit", items: ["Edit PDF", "Check Text", "Add Text", "Add Images", "Erase", "Watermark", "Number PDF pages"] },
-  { title: "Sign & Protect", items: ["Sign Document", "Initials", "Protect PDF", "Redact PDF"] },
-  { title: "Generative AI", items: ["Summarize PDF", "Translate PDF", "Ask PDF"] },
+  { title: "File", items: ["Open PDF", "Save", "Save As", "Export PDF", "Print"] },
+  { title: "Pages", items: ["Organize pages", "Merge PDFs", "Split PDF", "Extract pages from file", "Remove pages from file", "Add page numbers"] },
+  { title: "Edit", items: ["Check Text", "Edit PDF", "Add Text", "Add Images", "Erase", "Watermark"] },
 ];
+
+const fileActionsWithoutDocument = new Set(["Open PDF", "Merge PDFs", "Split PDF", "Extract pages from file", "Remove pages from file"]);
 
 function uid(prefix = "id") {
   return `${prefix}_${crypto.randomUUID()}`;
@@ -436,7 +421,7 @@ function eraseDrawingsAt(annotations: Annotation[], page: number, point: Point, 
   return anyChanged ? next : annotations;
 }
 
-function rotateAnnotation(annotation: Annotation, page: number, direction: -1 | 1): Annotation {
+function rotateAnnotation(annotation: Annotation, page: number, pageSize: PageSize, direction: -1 | 1): Annotation {
   if (annotation.page !== page) return annotation;
   if (annotation.type === "draw") {
     return {
@@ -470,14 +455,26 @@ function rotateAnnotation(annotation: Annotation, page: number, direction: -1 | 
       reverseY: nextStart.y > nextEnd.y,
     };
   }
-  return direction === 1
-    ? { ...annotation, x: 1 - annotation.y - annotation.h, y: annotation.x, w: annotation.h, h: annotation.w }
-    : { ...annotation, x: annotation.y, y: 1 - annotation.x - annotation.w, w: annotation.h, h: annotation.w };
+  if (annotation.type === "field" || (isChoiceAnnotation(annotation) && annotation.sourceFieldName)) {
+    return direction === 1
+      ? { ...annotation, x: 1 - annotation.y - annotation.h, y: annotation.x, w: annotation.h, h: annotation.w }
+      : { ...annotation, x: annotation.y, y: 1 - annotation.x - annotation.w, w: annotation.h, h: annotation.w };
+  }
+  const centerX = annotation.x + annotation.w / 2;
+  const centerY = annotation.y + annotation.h / 2;
+  const [x, y] = direction === 1 ? [1 - centerY, centerX] : [centerY, 1 - centerX];
+  const w = annotation.w * pageSize.width / pageSize.height;
+  const h = annotation.h * pageSize.height / pageSize.width;
+  return { ...annotation, x: x - w / 2, y: y - h / 2, w, h, rotation: (annotation.rotation ?? 0) + direction * 90 };
 }
 
 function isChoiceAnnotation(annotation: Annotation): annotation is ChoiceAnnotation {
   return ["checkbox", "radio", "checkmark"].includes(annotation.type);
 }
+
+const choiceInk = "#111827";
+const tickPoints = [[23, 51], [42, 70], [78, 30]];
+const crossPoints = [[[30, 30], [70, 70]], [[70, 30], [30, 70]]];
 
 function groupByPage<T extends { page: number }>(items: T[]) {
   const groups = new Map<number, T[]>();
@@ -491,11 +488,15 @@ function groupByPage<T extends { page: number }>(items: T[]) {
 
 const emptyAnnotations: Annotation[] = [];
 const emptyTextZones: TextZone[] = [];
-const emptyFormZones: FormZone[] = [];
-const emptyLineZones: LineZone[] = [];
+const emptyFillZones: DetectedFillZone[] = [];
 
 function hasSourceFieldName(annotation: Annotation): annotation is (FieldAnnotation | ChoiceAnnotation) & { sourceFieldName: string } {
   return (annotation.type === "field" || isChoiceAnnotation(annotation)) && Boolean(annotation.sourceFieldName);
+}
+
+function isFixedFill(annotation: Annotation) {
+  return hasSourceFieldName(annotation) ||
+    ((isTextAnnotation(annotation) || isChoiceAnnotation(annotation)) && Boolean(annotation.detectedField));
 }
 
 function pagePoint(event: React.PointerEvent, pageEl: HTMLDivElement) {
@@ -528,135 +529,95 @@ function isCheckedFieldValue(value: unknown) {
   return /^(1|true|yes|y|checked|x)$/i.test(String(value ?? ""));
 }
 
-function extractLineZones(operatorList: any, viewport: any, pageSize: PageSize, page: number): LineZone[] {
-  const zones: LineZone[] = [];
-  for (let index = 0; index < operatorList.fnArray.length; index += 1) {
-    if (operatorList.fnArray[index] !== OPS.constructPath) continue;
-    const [ops, args] = operatorList.argsArray[index] ?? [];
-    if (!Array.isArray(ops) || !Array.isArray(args)) continue;
-    let cursor = 0;
-    let current: Point | null = null;
-
-    for (const op of ops) {
-      if (op === OPS.moveTo) {
-        current = { x: args[cursor], y: args[cursor + 1] };
-        cursor += 2;
-        continue;
-      }
-      if (op === OPS.lineTo) {
-        const next = { x: args[cursor], y: args[cursor + 1] };
-        cursor += 2;
-        if (current) {
-          const [x1, y1] = viewport.convertToViewportPoint(current.x, current.y);
-          const [x2, y2] = viewport.convertToViewportPoint(next.x, next.y);
-          const width = Math.abs(x2 - x1);
-          const height = Math.abs(y2 - y1);
-          if (width > pageSize.width * 0.08 && height < 3) {
-            const left = Math.min(x1, x2);
-            const top = Math.min(y1, y2) - 24;
-            zones.push({
-              id: uid("linezone"),
-              page,
-              source: "line",
-              x: clamp(left / pageSize.width, 0, 1),
-              y: clamp(top / pageSize.height, 0, 1),
-              w: clamp(width / pageSize.width, 0.04, 1),
-              h: clamp(28 / pageSize.height, 0.02, 0.12),
-            });
-          }
-        }
-        current = next;
-        continue;
-      }
-      if (op === OPS.rectangle) {
-        cursor += 4;
-      }
-    }
-  }
-  return zones.filter((zone, index, all) => {
-    return !all.some(
-      (other, otherIndex) =>
-        otherIndex < index &&
-        other.page === zone.page &&
-        Math.abs(other.x - zone.x) < 0.01 &&
-        Math.abs(other.y - zone.y) < 0.01 &&
-        Math.abs(other.w - zone.w) < 0.02,
-    );
-  });
-}
-
-async function analyzePdfPage(doc: any, pageNumber: number, pageSize: PageSize): Promise<PageAnalysis> {
+async function analyzePdfPage(doc: PDFDocumentProxy, pageNumber: number, pageSize: PageSize): Promise<PageAnalysis> {
   const page = await doc.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1 });
+  const [operatorList, textContent, pdfAnnotations] = await Promise.all([
+    page.getOperatorList(), page.getTextContent(), page.getAnnotations(),
+  ]);
   const textZones: TextZone[] = [];
-  const formZones: FormZone[] = [];
-  const lineZones: LineZone[] = [];
+  const runs: FormTextRun[] = [];
+  const widgetBoxes: Array<Pick<BaseAnnotation, "x" | "y" | "w" | "h">> = [];
   const annotations: Annotation[] = [];
+  const toPageBounds = (box: Pick<BaseAnnotation, "x" | "y" | "w" | "h">) => ({
+    left: box.x * pageSize.width, right: (box.x + box.w) * pageSize.width,
+    top: box.y * pageSize.height, bottom: (box.y + box.h) * pageSize.height,
+  });
 
-  const operatorList = await page.getOperatorList();
-  lineZones.push(...extractLineZones(operatorList, viewport, pageSize, pageNumber));
-
-  const textContent = await page.getTextContent();
-  for (const item of textContent.items as any[]) {
-    if (!item.str?.trim()) continue;
-    const transform = Util.transform(viewport.transform, item.transform);
-    const fontSize = Math.max(8, Math.abs(transform[3]));
-    const width = Math.max(item.width || fontSize * item.str.length * 0.45, fontSize * 0.5);
-    const height = Math.max(fontSize * 1.15, item.height || fontSize);
+  for (const item of textContent.items) {
+    if (!("str" in item) || !item.str.trim()) continue;
+    const [a, b, c, d, x, y] = Util.transform(viewport.transform, item.transform);
+    const fontSize = Math.max(1, Math.hypot(c, d));
+    const advance = item.width * viewport.scale || fontSize * item.str.length * 0.45;
+    const textDirection = Math.hypot(a, b) || 1;
+    const direction = { x: a / textDirection, y: b / textDirection };
+    const ascent = { x: c / fontSize, y: d / fontSize };
+    const corners = [0, advance].flatMap((dx) => [-fontSize * 0.16, fontSize * 0.88].map((dy) => ({
+      x: x + direction.x * dx + ascent.x * dy,
+      y: y + direction.y * dx + ascent.y * dy,
+    })));
+    const left = Math.min(...corners.map((corner) => corner.x));
+    const top = Math.min(...corners.map((corner) => corner.y));
+    const right = Math.max(...corners.map((corner) => corner.x));
+    const bottom = Math.max(...corners.map((corner) => corner.y));
+    runs.push({ text: item.str, baseline: { x, y }, direction, ascent, advance, fontSize, left, top, right, bottom });
     textZones.push({
       id: uid("zone"),
       page: pageNumber,
-      x: clamp(transform[4] / pageSize.width, 0, 1),
-      y: clamp((transform[5] - height) / pageSize.height, 0, 1),
-      w: clamp(width / pageSize.width, 0.01, 1),
-      h: clamp(height / pageSize.height, 0.01, 1),
+      x: clamp(left / pageSize.width, 0, 1),
+      y: clamp(top / pageSize.height, 0, 1),
+      w: clamp((right - left) / pageSize.width, 0.01, 1),
+      h: clamp((bottom - top) / pageSize.height, 0.01, 1),
       text: item.str,
       fontSize,
     });
   }
 
-  const pdfAnnotations = await page.getAnnotations();
-  for (const candidate of pdfAnnotations as any[]) {
-    if (!candidate.rect) continue;
-    const box = rectFromPdf(viewport, candidate.rect, pageSize);
+  const candidates = pdfAnnotations.filter((candidate) => candidate.rect).map((candidate) => ({
+    candidate, box: rectFromPdf(viewport, candidate.rect, pageSize),
+  }));
+  for (const { candidate, box } of candidates) {
     if (candidate.subtype === "Widget") {
-      const fieldName = candidate.fieldName || `Field ${formZones.length + 1}`;
-      const fieldType = candidate.fieldType || "Tx";
-      const fieldValue = candidate.fieldValue == null ? "" : String(candidate.fieldValue);
-      formZones.push({
-        id: uid("formzone"),
-        page: pageNumber,
-        ...box,
-        name: fieldName,
-        fieldType,
-        value: fieldValue,
-      });
-      if (fieldType === "Btn") {
+      widgetBoxes.push(box);
+      const fieldName = candidate.fieldName;
+      if (!fieldName) continue;
+      const fieldValue = String(candidate.fieldValue ?? "");
+      if (candidate.checkBox || candidate.radioButton) {
+        const sourceOption = candidate.radioButton ? candidate.buttonValue : undefined;
+        const onValue = sourceOption ?? candidate.exportValue;
+        const checked = onValue ? fieldValue === onValue : isCheckedFieldValue(fieldValue);
+        const radioNeighbor = candidate.radioButton
+          ? candidates.filter((entry) => entry.candidate.radioButton && entry.box.x > box.x && Math.abs(entry.box.y - box.y) < 0.01)
+            .sort((a, b) => a.box.x - b.box.x)[0]
+          : undefined;
+        const printedLabel = candidate.radioButton
+          ? nearbyCheckboxLabel(toPageBounds(box), runs, radioNeighbor ? toPageBounds(radioNeighbor.box) : undefined)
+          : "";
         annotations.push({
-          id: uid("sourceCheckbox"),
+          id: `widget-${pageNumber}-${candidate.id}`,
           page: pageNumber,
-          type: "checkbox",
-          x: box.x,
-          y: box.y,
-          w: box.w,
-          h: box.h,
-          checked: isCheckedFieldValue(fieldValue),
+          ...box,
+          type: candidate.radioButton ? "radio" : "checkbox",
+          checked,
+          originalChecked: checked,
           mark: "check",
           sourceFieldName: fieldName,
+          sourceOption,
+          sourceLabel: printedLabel || (candidate.radioButton && sourceOption !== undefined ? `${fieldName} (${sourceOption})` : undefined),
+          readOnly: candidate.readOnly,
         });
-      } else {
+      } else if (candidate.fieldType === "Tx" || candidate.fieldType === "Ch") {
         annotations.push({
-          id: uid("sourceField"),
+          id: `widget-${pageNumber}-${candidate.id}`,
           page: pageNumber,
+          ...box,
           type: "field",
-          x: box.x,
-          y: box.y,
-          w: box.w,
-          h: box.h,
           name: fieldName,
           value: fieldValue,
           fontSize: fieldFontSize(box, pageSize),
           sourceFieldName: fieldName,
+          multiline: candidate.multiLine,
+          readOnly: candidate.readOnly || candidate.fieldType === "Ch",
         });
       }
       continue;
@@ -685,7 +646,11 @@ async function analyzePdfPage(doc: any, pageNumber: number, pageSize: PageSize):
     }
   }
 
-  return { textZones, formZones, lineZones, annotations };
+  const fillZones = detectFillZones(operatorList, viewport, runs, pageNumber).filter((zone) => !widgetBoxes.some((widget) =>
+    Math.min(zone.x + zone.w, widget.x + widget.w) - Math.max(zone.x, widget.x) > 0.004 &&
+    Math.min(zone.y + zone.h, widget.y + widget.h) - Math.max(zone.y, widget.y) > 0.004,
+  ));
+  return { textZones, fillZones, annotations };
 }
 
 function loadAssets() {
@@ -732,8 +697,8 @@ function App() {
   const [currentPath, setCurrentPath] = useState<string | null>(null);
   const [pageSizes, setPageSizes] = useState<PageSize[]>([]);
   const [textZones, setTextZones] = useState<TextZone[]>([]);
-  const [formZones, setFormZones] = useState<FormZone[]>([]);
-  const [lineZones, setLineZones] = useState<LineZone[]>([]);
+  const [fillZones, setFillZones] = useState<DetectedFillZone[]>([]);
+  const [draftFill, setDraftFill] = useState<TextAnnotation | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -773,6 +738,8 @@ function App() {
   const [appVersion, setAppVersion] = useState("development");
   const [status, setStatus] = useState("Ready");
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
+  const [sidebarView, setSidebarView] = useState<"tools" | "pages">("tools");
+  const [showInspector, setShowInspector] = useState(() => window.innerWidth > 760);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [splitOpen, setSplitOpen] = useState(false);
   const [organizeOpen, setOrganizeOpen] = useState(false);
@@ -784,19 +751,21 @@ function App() {
   const [ocrError, setOcrError] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [pendingCloseTabId, setPendingCloseTabId] = useState<string | null>(null);
-  const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: Tool } | null>(null);
+  const [placementPreview, setPlacementPreview] = useState<{ page: number; x: number; y: number; tool: ChoiceAnnotation["type"] } | null>(null);
   const [imagePlacementPreview, setImagePlacementPreview] = useState<{ page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null>(null);
+  const [imageToPlace, setImageToPlace] = useState<{ dataUrl: string; label: string; aspectRatio: number } | null>(null);
   const [eraserPreview, setEraserPreview] = useState<{ page: number; x: number; y: number } | null>(null);
   const [toolMenu, setToolMenu] = useState<{ tool: Tool; x: number; y: number } | null>(null);
   const isDesktop = Boolean(window.pdfFillerDesktop);
   const historyRef = useRef<Annotation[][]>([]);
   const redoRef = useRef<Annotation[][]>([]);
-  const lastAnnotationsRef = useRef<Annotation[]>([]);
   const annotationsRef = useRef<Annotation[]>([]);
-  const suppressHistoryRef = useRef(false);
-  const loadedRef = useRef(false);
+  const savedAnnotationsRef = useRef<Annotation[] | null>(null);
   const pageRefs = useRef<Record<number, HTMLElement | null>>({});
   const documentScrollerRef = useRef<HTMLDivElement | null>(null);
+  const pendingPageScrollRef = useRef<{ page: number; scroll?: PdfTabState["scroll"] } | null>(null);
+  const scrollFrameRef = useRef(0);
+  const menuBarRef = useRef<HTMLElement | null>(null);
   const pendingZoomAnchorRef = useRef<{
     page: number;
     xRatio: number;
@@ -809,49 +778,60 @@ function App() {
   const draftRawSizeRef = useRef<{ w: number; h: number } | null>(null);
   const dragRef = useRef<{
     id: string;
+    pointerId: number;
     mode: "move" | "resize" | "rotate";
     startX: number;
     startY: number;
-    original: Annotation;
+    original: BaseAnnotation;
     pageWidth: number;
     pageHeight: number;
     centerX?: number;
     centerY?: number;
     startAngle?: number;
   } | null>(null);
-  const dragStartAnnotationsRef = useRef<Annotation[] | null>(null);
-  const dragChangedRef = useRef(false);
+  const gestureStartRef = useRef<Annotation[] | null>(null);
   const activeDrawRef = useRef<string | null>(null);
   const activeEraseRef = useRef(false);
-  const eraseStartAnnotationsRef = useRef<Annotation[] | null>(null);
-  const eraseChangedRef = useRef(false);
   const pendingInitialPdfRef = useRef<DesktopPdfPayload | null>(null);
+  const startupReadyRef = useRef(startupReady);
   const ocrCancelRef = useRef(false);
   const analyzedPagesRef = useRef(new Set<number>());
   const analyzingPagesRef = useRef(new Set<number>());
   const activeTabIdRef = useRef<string | null>(null);
   const pdfDocRef = useRef<any>(null);
   const savePdfRef = useRef<() => Promise<boolean>>(async () => false);
+  const savingRef = useRef(false);
   const printPdfRef = useRef<() => Promise<void>>(async () => undefined);
   const saveAndCloseRef = useRef<() => Promise<void>>(async () => undefined);
+  const saveBeforeDesktopCloseRef = useRef<() => Promise<void>>(async () => undefined);
 
+  const visibleDraftFill = draftFill?.id === selectedId ? draftFill : null;
   const selected = useMemo(
-    () => annotations.find((annotation) => annotation.id === selectedId) ?? null,
-    [annotations, selectedId],
+    () => annotations.find((annotation) => annotation.id === selectedId) ?? visibleDraftFill,
+    [annotations, selectedId, visibleDraftFill],
   );
-  const annotationsByPage = useMemo(() => groupByPage(annotations), [annotations]);
+  const annotationsByPage = useMemo(() => groupByPage(visibleDraftFill ? [...annotations, visibleDraftFill] : annotations), [annotations, visibleDraftFill]);
   const textZonesByPage = useMemo(() => groupByPage(textZones), [textZones]);
-  const formZonesByPage = useMemo(() => groupByPage(formZones), [formZones]);
-  const lineZonesByPage = useMemo(() => groupByPage(lineZones), [lineZones]);
+  const fillZonesByPage = useMemo(() => groupByPage(fillZones), [fillZones]);
+
+  useEffect(() => {
+    if (!activeMenu) return;
+    const dismissMenu = (event: PointerEvent) => {
+      if (!menuBarRef.current?.contains(event.target as Node)) setActiveMenu(null);
+    };
+    document.addEventListener("pointerdown", dismissMenu);
+    return () => document.removeEventListener("pointerdown", dismissMenu);
+  }, [activeMenu]);
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
     pdfDocRef.current = pdfDoc;
   }, [activeTabId, pdfDoc]);
 
-  useEffect(() => {
-    draftBoxRef.current = draftBox;
-  }, [draftBox]);
+  const updateDraftBox = useCallback((next: DraftBox | null) => {
+    draftBoxRef.current = next;
+    setDraftBox(next);
+  }, []);
 
   useEffect(() => {
     const applyShiftConstraint = (constrained: boolean) => {
@@ -859,7 +839,7 @@ function App() {
       const raw = draftRawSizeRef.current;
       if (!current || !raw || !isConstrainedShape(current.type)) return;
       const size = Math.min(Math.abs(raw.w), Math.abs(raw.h));
-      setDraftBox({
+      updateDraftBox({
         ...current,
         w: constrained ? Math.sign(raw.w || 1) * size : raw.w,
         h: constrained ? Math.sign(raw.h || 1) * size : raw.h,
@@ -877,7 +857,7 @@ function App() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-  }, []);
+  }, [updateDraftBox]);
 
   const currentTabSnapshot = useCallback((id = activeTabId): PdfTabState | null => {
     if (!id || !pdfBytes || !pdfDoc) return null;
@@ -889,32 +869,39 @@ function App() {
       pdfDoc,
       pageSizes,
       textZones,
-      formZones,
-      lineZones,
-      annotations,
-      selectedId,
-      editingId,
+      fillZones,
+      annotations: annotationsRef.current,
+      selectedId: visibleDraftFill ? null : selectedId,
+      editingId: visibleDraftFill ? null : editingId,
       zoom,
       activePage,
+      scroll: documentScrollerRef.current ? {
+        top: documentScrollerRef.current.scrollTop,
+        left: documentScrollerRef.current.scrollLeft,
+      } : undefined,
       isDirty,
+      savedAnnotations: savedAnnotationsRef.current,
       status,
       history: historyRef.current,
       redo: redoRef.current,
     };
-  }, [activePage, activeTabId, annotations, currentPath, editingId, fileName, formZones, isDirty, lineZones, pageSizes, pdfBytes, pdfDoc, selectedId, status, textZones, zoom]);
+  }, [activePage, activeTabId, currentPath, editingId, fileName, fillZones, isDirty, pageSizes, pdfBytes, pdfDoc, selectedId, status, textZones, visibleDraftFill, zoom]);
+  const snapshotRef = useRef(currentTabSnapshot);
+  snapshotRef.current = currentTabSnapshot;
 
   const restoreTab = (tab: PdfTabState) => {
-    suppressHistoryRef.current = true;
-    loadedRef.current = true;
+    activeTabIdRef.current = tab.id;
+    pdfDocRef.current = tab.pdfDoc;
+    pendingPageScrollRef.current = { page: tab.activePage, scroll: tab.scroll };
     analyzedPagesRef.current = new Set([
       ...tab.textZones.map((zone) => zone.page),
-      ...tab.formZones.map((zone) => zone.page),
-      ...tab.lineZones.map((zone) => zone.page),
+      ...tab.fillZones.map((zone) => zone.page),
     ]);
     analyzingPagesRef.current = new Set();
     historyRef.current = tab.history;
     redoRef.current = tab.redo;
-    lastAnnotationsRef.current = tab.annotations;
+    annotationsRef.current = tab.annotations;
+    savedAnnotationsRef.current = tab.savedAnnotations;
     setActiveTabId(tab.id);
     setPdfBytes(tab.pdfBytes);
     setPdfDoc(tab.pdfDoc);
@@ -922,8 +909,8 @@ function App() {
     setCurrentPath(tab.currentPath);
     setPageSizes(tab.pageSizes);
     setTextZones(tab.textZones);
-    setFormZones(tab.formZones);
-    setLineZones(tab.lineZones);
+    setFillZones(tab.fillZones);
+    setDraftFill(null);
     setAnnotations(tab.annotations);
     setSelectedId(tab.selectedId);
     setEditingId(tab.editingId);
@@ -931,7 +918,6 @@ function App() {
     setActivePage(tab.activePage);
     setIsDirty(tab.isDirty);
     setStatus(tab.status);
-    void window.pdfFillerDesktop?.setDirty(tabs.some((candidate) => candidate.id === tab.id ? tab.isDirty : candidate.isDirty));
   };
 
   const activateTab = (id: string) => {
@@ -950,7 +936,6 @@ function App() {
     const nextTabs = (snapshot ? tabs.map((tab) => (tab.id === snapshot.id ? snapshot : tab)) : tabs).filter((tab) => tab.id !== id);
     setTabs(nextTabs);
     if (id !== activeTabId) {
-      void window.pdfFillerDesktop?.setDirty(nextTabs.some((tab) => tab.isDirty));
       return;
     }
     const next = nextTabs[Math.min(Math.max(closingIndex, 0), nextTabs.length - 1)] ?? null;
@@ -959,17 +944,20 @@ function App() {
       return;
     }
     setActiveTabId(null);
+    activeTabIdRef.current = null;
+    pdfDocRef.current = null;
     setPdfBytes(null);
     setPdfDoc(null);
     setFileName("untitled.pdf");
     setCurrentPath(null);
     setPageSizes([]);
     setTextZones([]);
-    setFormZones([]);
-    setLineZones([]);
-    suppressHistoryRef.current = true;
-    loadedRef.current = false;
-    lastAnnotationsRef.current = [];
+    setFillZones([]);
+    setDraftFill(null);
+    historyRef.current = [];
+    redoRef.current = [];
+    annotationsRef.current = [];
+    savedAnnotationsRef.current = null;
     setAnnotations([]);
     analyzedPagesRef.current = new Set();
     analyzingPagesRef.current = new Set();
@@ -977,7 +965,6 @@ function App() {
     setEditingId(null);
     setIsDirty(false);
     setStatus("Ready");
-    void window.pdfFillerDesktop?.setDirty(false);
   };
 
   const requestCloseTab = (id: string) => {
@@ -994,23 +981,26 @@ function App() {
     setPendingCloseTabId(id);
   };
 
-  const loadPdfBytes = async (bytes: ArrayBuffer, name: string, sourcePath: string | null = null, options: { replaceActive?: boolean } = {}) => {
-    const previousSnapshot = currentTabSnapshot();
-    setStatus("Opening PDF...");
-    analyzedPagesRef.current = new Set();
-    analyzingPagesRef.current = new Set();
+  const loadPdfBytes = async (bytes: ArrayBuffer, name: string, sourcePath: string | null = null, options: { tabId: string; annotations: Annotation[]; activePage: number; status: string } | null = null) => {
     const task = getDocument({ data: bytes.slice(0) });
-    const doc = await task.promise;
     const sizes: PageSize[] = [];
-
-    for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
-      const page = await doc.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: 1 });
-      sizes.push({ width: viewport.width, height: viewport.height });
+    let doc;
+    try {
+      doc = await task.promise;
+      for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
+        const page = await doc.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1 });
+        sizes.push({ width: viewport.width, height: viewport.height });
+      }
+    } catch (error) {
+      await task.destroy().catch(() => undefined);
+      throw error;
     }
 
-    const statusText = `${doc.numPages} page${doc.numPages === 1 ? "" : "s"} ready. Form fields load as pages come into view.`;
-    const tabId = options.replaceActive && activeTabId ? activeTabId : uid("tab");
+    const previousSnapshot = snapshotRef.current();
+    const statusText = options?.status ?? "PDF opened";
+    const tabId = options?.tabId ?? uid("tab");
+    const nextAnnotations = options?.annotations ?? [];
     const nextTab: PdfTabState = {
       id: tabId,
       fileName: name,
@@ -1019,14 +1009,14 @@ function App() {
       pdfDoc: doc,
       pageSizes: sizes,
       textZones: [],
-      formZones: [],
-      lineZones: [],
-      annotations: [],
+      fillZones: [],
+      annotations: nextAnnotations,
       selectedId: null,
       editingId: null,
-      zoom: 1,
-      activePage: 1,
-      isDirty: false,
+      zoom: options ? zoom : Math.min(1, getFitZoom(sizes[0])),
+      activePage: options?.activePage ?? 1,
+      isDirty: Boolean(options),
+      savedAnnotations: options ? null : nextAnnotations,
       status: statusText,
       history: [],
       redo: [],
@@ -1034,41 +1024,52 @@ function App() {
 
     setTabs((current) => {
       const updated = previousSnapshot ? current.map((tab) => (tab.id === previousSnapshot.id ? previousSnapshot : tab)) : current;
-      const withoutExisting = updated.filter((tab) => tab.id !== tabId);
-      return options.replaceActive ? [...withoutExisting, nextTab] : [...withoutExisting, nextTab];
+      return options ? updated.map((tab) => tab.id === tabId ? nextTab : tab) : [...updated, nextTab];
     });
-    setActiveTabId(tabId);
-    setPdfBytes(bytes);
-    setPdfDoc(doc);
-    setFileName(name);
-    setCurrentPath(sourcePath);
-    setPageSizes(sizes);
-    setTextZones([]);
-    setFormZones([]);
-    setLineZones([]);
-    suppressHistoryRef.current = true;
-    historyRef.current = [];
-    redoRef.current = [];
-    lastAnnotationsRef.current = [];
-    loadedRef.current = true;
-    setAnnotations([]);
-    setSelectedId(null);
-    setEditingId(null);
-    setIsDirty(false);
-    void window.pdfFillerDesktop?.setDirty(false);
-    setActivePage(1);
-    setZoom(1);
-    setStatus(statusText);
+    if (!options || previousSnapshot?.id === tabId) {
+      restoreTab(nextTab);
+      if (!options) setTool("select");
+    }
   };
 
   const loadPdf = async (file: File) => {
-    await loadPdfBytes(await file.arrayBuffer(), file.name);
+    try {
+      await loadPdfBytes(await file.arrayBuffer(), file.name);
+    } catch (error) {
+      setStatus(`Could not open ${file.name}. ${error instanceof Error ? error.message : "Choose a valid PDF."}`);
+    }
   };
 
   const loadDesktopPdfPath = async (filePath: string) => {
-    const payload = await window.pdfFillerDesktop?.readPdfFile(filePath);
-    if (!payload) return;
-    await loadPdfBytes(payloadToArrayBuffer(payload.bytes), payload.name, payload.path);
+    try {
+      const payload = await window.pdfFillerDesktop?.readPdfFile(filePath);
+      if (!payload) return;
+      await loadPdfBytes(payloadToArrayBuffer(payload.bytes), payload.name, payload.path);
+    } catch (error) {
+      setStatus(`Could not open PDF. ${error instanceof Error ? error.message : ""}`);
+    }
+  };
+
+  const readPlacementImage = async (file: File) => {
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      const scale = Math.min(1, 4096 / Math.max(image.naturalWidth, image.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Image rendering is unavailable.");
+      context.drawImage(image, 0, 0, canvas.width, canvas.height);
+      setImageToPlace({ dataUrl: canvas.toDataURL("image/png"), label: file.name, aspectRatio: canvas.width / canvas.height });
+      setStatus("Click the PDF to place the image.");
+    } catch {
+      setStatus(`Could not open ${file.name} as an image.`);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   };
 
   useEffect(() => {
@@ -1094,7 +1095,8 @@ function App() {
     void window.pdfFillerDesktop.getInitialPdf().then((payload) => {
       if (!payload) return;
       pendingInitialPdfRef.current = payload;
-    });
+      if (startupReadyRef.current) openInitialPdf();
+    }).catch((error: Error) => setStatus(`Could not open PDF. ${error.message}`));
     const removeOpenListener = window.pdfFillerDesktop.onPdfOpenedFromSystem((filePath) => {
       void loadDesktopPdfPath(filePath);
     });
@@ -1104,9 +1106,7 @@ function App() {
       setShowUpdateGate(true);
     });
     const removeSaveBeforeCloseListener = window.pdfFillerDesktop.onSaveBeforeClose(() => {
-      void savePdfRef.current().then((saved) => {
-        if (saved) void window.pdfFillerDesktop?.closeAfterSave();
-      });
+      void saveBeforeDesktopCloseRef.current();
     });
     return () => {
       removeOpenListener();
@@ -1136,54 +1136,71 @@ function App() {
   }, [showUpdateGate, startupReady, updateState.phase]);
 
   useEffect(() => {
-    if (!startupReady || !pendingInitialPdfRef.current) return;
-    const payload = pendingInitialPdfRef.current;
-    pendingInitialPdfRef.current = null;
-    void loadPdfBytes(payloadToArrayBuffer(payload.bytes), payload.name, payload.path);
+    startupReadyRef.current = startupReady;
+    if (startupReady) openInitialPdf();
   }, [startupReady]);
 
+  const openInitialPdf = () => {
+    const payload = pendingInitialPdfRef.current;
+    if (!payload) return;
+    pendingInitialPdfRef.current = null;
+    void loadPdfBytes(payloadToArrayBuffer(payload.bytes), payload.name, payload.path)
+      .catch((error: Error) => setStatus(`Could not open PDF. ${error.message}`));
+  };
+
   useEffect(() => {
-    annotationsRef.current = annotations;
-    if (!loadedRef.current) {
-      lastAnnotationsRef.current = annotations;
-      return;
-    }
-    if (suppressHistoryRef.current) {
-      suppressHistoryRef.current = false;
-      lastAnnotationsRef.current = annotations;
-      return;
-    }
-    historyRef.current = [...historyRef.current.slice(-39), lastAnnotationsRef.current];
+    void window.pdfFillerDesktop?.setDirty(isDirty || tabs.some((tab) => tab.id !== activeTabId && tab.isDirty));
+  }, [activeTabId, isDirty, tabs]);
+
+  const updateDirtyState = useCallback(() => {
+    const dirty = annotationsRef.current !== savedAnnotationsRef.current;
+    setIsDirty(dirty);
+    setTabs((current) => current.map((tab) => tab.id === activeTabIdRef.current ? { ...tab, isDirty: dirty } : tab));
+  }, []);
+
+  const recordAnnotationEdit = useCallback((previous: Annotation[]) => {
+    if (previous === annotationsRef.current) return;
+    historyRef.current = [...historyRef.current.slice(-39), previous];
     redoRef.current = [];
-    lastAnnotationsRef.current = annotations;
-    setIsDirty(true);
-    setTabs((current) =>
-      current.map((tab) => (tab.id === activeTabId ? { ...tab, annotations, isDirty: true, history: historyRef.current, redo: redoRef.current } : tab)),
-    );
-    void window.pdfFillerDesktop?.setDirty(true);
-  }, [annotations]);
+    updateDirtyState();
+  }, [updateDirtyState]);
 
-  const undo = useCallback(() => {
-    const previous = historyRef.current.pop();
-    if (!previous) return;
-    redoRef.current = [...redoRef.current, annotations];
-    suppressHistoryRef.current = true;
-    annotationsRef.current = previous;
-    setAnnotations(previous);
-    setSelectedId(null);
-    setEditingId(null);
-  }, [annotations]);
-
-  const redo = useCallback(() => {
-    const next = redoRef.current.pop();
-    if (!next) return;
-    historyRef.current = [...historyRef.current, annotations];
-    suppressHistoryRef.current = true;
+  const changeAnnotations = useCallback((update: (current: Annotation[]) => Annotation[], recordHistory = true) => {
+    const previous = annotationsRef.current;
+    const next = update(previous);
+    if (next === previous) return;
     annotationsRef.current = next;
     setAnnotations(next);
+    if (recordHistory) recordAnnotationEdit(previous);
+  }, [recordAnnotationEdit]);
+
+  const finishAnnotationGesture = useCallback(() => {
+    const previous = gestureStartRef.current;
+    gestureStartRef.current = null;
+    if (previous) recordAnnotationEdit(previous);
+  }, [recordAnnotationEdit]);
+
+  const undo = useCallback(() => {
+    if (gestureStartRef.current) return;
+    const previous = historyRef.current.pop();
+    if (!previous) return;
+    redoRef.current = [...redoRef.current, annotationsRef.current];
+    changeAnnotations(() => previous, false);
+    updateDirtyState();
     setSelectedId(null);
     setEditingId(null);
-  }, [annotations]);
+  }, [changeAnnotations, updateDirtyState]);
+
+  const redo = useCallback(() => {
+    if (gestureStartRef.current) return;
+    const next = redoRef.current.pop();
+    if (!next) return;
+    historyRef.current = [...historyRef.current, annotationsRef.current];
+    changeAnnotations(() => next, false);
+    updateDirtyState();
+    setSelectedId(null);
+    setEditingId(null);
+  }, [changeAnnotations, updateDirtyState]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1219,8 +1236,11 @@ function App() {
         removeAnnotation(selectedId);
       }
       if (event.key === "Escape") {
+        setSelectedId(null);
         setEditingId(null);
         setTool("select");
+        setActiveMenu(null);
+        setToolMenu(null);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1232,51 +1252,69 @@ function App() {
     if (analyzedPagesRef.current.has(page) || analyzingPagesRef.current.has(page)) return;
     const doc = pdfDoc;
     const tabId = activeTabId;
-    analyzingPagesRef.current.add(page);
+    const analyzing = analyzingPagesRef.current;
+    analyzing.add(page);
     try {
       const analysis = await analyzePdfPage(doc, page, pageSizes[page - 1]);
       if (pdfDocRef.current !== doc || activeTabIdRef.current !== tabId) return;
       analyzedPagesRef.current.add(page);
       setTextZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.textZones]);
-      setFormZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.formZones]);
-      setLineZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.lineZones]);
+      setFillZones((current) => [...current.filter((zone) => zone.page !== page), ...analysis.fillZones]);
       if (analysis.annotations.length) {
-        suppressHistoryRef.current = true;
-        setAnnotations((current) => {
-          const sourceKeys = new Set<string>();
-          for (const annotation of current) {
-            if (annotation.page === page && hasSourceFieldName(annotation)) {
-              sourceKeys.add(`${annotation.type}:${annotation.sourceFieldName}`);
+        const snapshots = new Map<Annotation[], Annotation[]>();
+        const includeFormFields = (current: Annotation[]) => {
+          const existing = snapshots.get(current);
+          if (existing) return existing;
+          const imported = analysis.annotations.filter((candidate) => !current.some((annotation) =>
+            annotation.page === page && annotation.type === candidate.type &&
+            hasSourceFieldName(candidate) && hasSourceFieldName(annotation) &&
+            annotation.sourceFieldName === candidate.sourceFieldName &&
+            Math.abs(annotation.x - candidate.x) < 0.001 && Math.abs(annotation.y - candidate.y) < 0.001,
+          )).map((candidate) => {
+            if (!hasSourceFieldName(candidate)) return candidate;
+            if (candidate.type === "field") {
+              const peer = current.find((annotation): annotation is FieldAnnotation =>
+                annotation.type === "field" && annotation.sourceFieldName === candidate.sourceFieldName,
+              );
+              return peer && peer.value !== candidate.value ? { ...candidate, value: peer.value } : candidate;
             }
-          }
-          const imported = analysis.annotations.filter((annotation) => {
-            if (hasSourceFieldName(annotation)) {
-              return !sourceKeys.has(`${annotation.type}:${annotation.sourceFieldName}`);
-            }
-            return true;
+            const peers = current.filter((annotation): annotation is ChoiceAnnotation =>
+              isChoiceAnnotation(annotation) && annotation.type === candidate.type && annotation.sourceFieldName === candidate.sourceFieldName,
+            );
+            const changed = peers.find((annotation) => annotation.originalChecked !== undefined && annotation.originalChecked !== annotation.checked);
+            if (!changed) return candidate;
+            if (candidate.type !== "radio") return { ...candidate, checked: changed.checked };
+            const selected = peers.find((annotation) => annotation.checked);
+            return { ...candidate, checked: Boolean(selected && selected.sourceOption === candidate.sourceOption) };
           });
-          return imported.length ? [...current, ...imported] : current;
-        });
+          const next = imported.length ? [...current, ...imported] : current;
+          snapshots.set(current, next);
+          return next;
+        };
+        historyRef.current = historyRef.current.map(includeFormFields);
+        redoRef.current = redoRef.current.map(includeFormFields);
+        if (gestureStartRef.current) gestureStartRef.current = includeFormFields(gestureStartRef.current);
+        if (savedAnnotationsRef.current) savedAnnotationsRef.current = includeFormFields(savedAnnotationsRef.current);
+        changeAnnotations(includeFormFields, false);
       }
-      const formCount = analysis.formZones.length;
-      const lineCount = analysis.lineZones.length;
-      if (formCount || lineCount) setStatus(`Page ${page} ready: ${formCount} form fields, ${lineCount} fill lines.`);
     } catch (error) {
       console.warn("Page analysis failed", error);
-      setStatus(`Page ${page} loaded. Some fill helpers could not be detected.`);
+      if (pdfDocRef.current === doc) setStatus(`Page ${page} loaded. Some fill areas could not be detected.`);
     } finally {
-      analyzingPagesRef.current.delete(page);
+      analyzing.delete(page);
     }
-  }, [activeTabId, pageSizes, pdfDoc]);
+  }, [activeTabId, changeAnnotations, pageSizes, pdfDoc]);
 
   const addAnnotation = (annotation: Annotation) => {
-    setAnnotations((current) => [...current, annotation]);
+    changeAnnotations((current) => [...current, annotation]);
     setSelectedId(annotation.id);
-    if (isTextAnnotation(annotation) || annotation.type === "field") setEditingId(annotation.id);
+    setEditingId(isTextAnnotation(annotation) || annotation.type === "field" ? annotation.id : null);
   };
 
   const removeAnnotation = (id: string) => {
-    const existing = annotations.find((annotation) => annotation.id === id);
+    if (draftFill?.id === id) setDraftFill(null);
+    const existing = annotationsRef.current.find((annotation) => annotation.id === id);
+    if (existing && (existing.type === "field" || isChoiceAnnotation(existing)) && existing.readOnly) return;
     if (existing?.type === "field" && existing.sourceFieldName) {
       updateAnnotation(id, { value: "" });
       setEditingId(id);
@@ -1284,32 +1322,112 @@ function App() {
       return;
     }
     if (existing && isChoiceAnnotation(existing) && existing.sourceFieldName) {
-      updateAnnotation(id, { checked: false });
+      setChoiceChecked(id, false);
       setStatus("Form field cleared.");
       return;
     }
-    setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    changeAnnotations((current) => current.filter((annotation) => annotation.id !== id));
     setSelectedId((current) => (current === id ? null : current));
     setEditingId((current) => (current === id ? null : current));
   };
 
   const updateAnnotation = (id: string, patch: Partial<Annotation>) => {
-    setAnnotations((current) =>
-      current.map((annotation) =>
-        annotation.id === id ? ({ ...annotation, ...patch } as Annotation) : annotation,
-      ),
+    if (visibleDraftFill?.id === id) {
+      const next = { ...visibleDraftFill, ...patch } as TextAnnotation;
+      if (next.text) {
+        changeAnnotations((current) => [...current, next]);
+        setDraftFill(null);
+      } else setDraftFill(next);
+      return;
+    }
+    changeAnnotations((current) => {
+      const index = current.findIndex((annotation) => annotation.id === id);
+      if (index === -1) return current;
+      const annotation = current[index];
+      if (Object.entries(patch).every(([key, value]) => annotation[key as keyof typeof annotation] === value)) return current;
+      const updated = { ...annotation, ...patch } as Annotation;
+      return current.map((other) => {
+        if (other.id === id) return updated;
+        if (updated.type === "field" && updated.sourceFieldName && other.type === "field" &&
+          other.sourceFieldName === updated.sourceFieldName && other.value !== updated.value) {
+          return { ...other, value: updated.value };
+        }
+        return other;
+      });
+    });
+  };
+
+  const setChoiceChecked = (id: string, checked?: boolean) => {
+    const target = annotationsRef.current.find((annotation) => annotation.id === id);
+    if (!target || !isChoiceAnnotation(target) || target.readOnly) return;
+    const nextChecked = checked ?? (target.sourceOption ? true : !target.checked);
+    if (nextChecked !== target.checked) {
+      changeAnnotations((current) => current.map((annotation) => {
+        if (!isChoiceAnnotation(annotation)) return annotation;
+        if (annotation.id === id) return { ...annotation, checked: nextChecked };
+        if (!target.sourceFieldName || annotation.sourceFieldName !== target.sourceFieldName || annotation.type !== target.type) return annotation;
+        const state = target.type === "radio" ? nextChecked && annotation.sourceOption === target.sourceOption : nextChecked;
+        return state === annotation.checked ? annotation : { ...annotation, checked: state };
+      }));
+    }
+    setActivePage(target.page);
+    setSelectedId(id);
+    setEditingId(null);
+  };
+
+  const activateFillZone = (zone: DetectedFillZone) => {
+    const existing = annotationsRef.current.find((annotation) =>
+      (isTextAnnotation(annotation) || isChoiceAnnotation(annotation)) && annotation.detectedField?.id === zone.id && annotation.page === zone.page,
     );
+    setActivePage(zone.page);
+    if (existing) {
+      if (isChoiceAnnotation(existing)) setChoiceChecked(existing.id);
+      else {
+        setSelectedId(existing.id);
+        setEditingId(existing.id);
+      }
+      return;
+    }
+    const detectedField = { id: zone.id, label: zone.label };
+    if (zone.kind === "checkbox") {
+      const { page, x, y, w, h } = zone;
+      addAnnotation({ id: uid("tick"), page, x, y, w, h, type: "checkmark", checked: true, mark: "check", detectedField });
+      return;
+    }
+    if (visibleDraftFill?.detectedField?.id === zone.id && visibleDraftFill.page === zone.page) return;
+    const size = pageSizes[zone.page - 1];
+    const horizontalPadding = (zone.source === "line" ? 2 : 4) / size.width;
+    const verticalPadding = clamp((zone.h * size.height - 15) / 2, 2, 7) / size.height;
+    const field: TextAnnotation = {
+      id: uid("fillText"),
+      page: zone.page,
+      type: "text",
+      x: zone.x + horizontalPadding,
+      y: zone.y + verticalPadding,
+      w: zone.w - horizontalPadding * 2,
+      h: zone.h - verticalPadding - 2 / size.height,
+      text: "",
+      color: textColor,
+      fontSize: 11,
+      bold: false,
+      detectedField,
+    };
+    setDraftFill(field);
+    setSelectedId(field.id);
+    setEditingId(field.id);
   };
 
   const createTextAnnotation = (page: number, point: Point, preset?: Partial<TextAnnotation>) => {
+    const w = preset?.w ?? 0.28;
+    const h = preset?.h ?? 0.055;
     addAnnotation({
       id: uid("text"),
       page,
       type: preset?.type ?? "text",
-      x: point.x,
-      y: point.y,
-      w: preset?.w ?? 0.28,
-      h: preset?.h ?? 0.055,
+      x: clamp(point.x, 0, 1 - w),
+      y: clamp(point.y, 0, 1 - h),
+      w,
+      h,
       text: preset?.text ?? "",
       color: preset?.color ?? textColor,
       fontSize: preset?.fontSize ?? 16,
@@ -1348,89 +1466,50 @@ function App() {
     setStatus("Watermark added. Edit text, opacity, angle, and repeat in the right panel.");
   };
 
+  const getImagePlacement = (page: number, point: Point) => {
+    if (!imageToPlace) return null;
+    const { width, height } = pageSizes[page - 1];
+    const imageWidth = Math.min(width * 0.28, height * 0.23 * imageToPlace.aspectRatio);
+    const w = imageWidth / width;
+    const h = imageWidth / imageToPlace.aspectRatio / height;
+    return { ...imageToPlace, page, w, h, x: clamp(point.x - w / 2, 0, 1 - w), y: clamp(point.y - h / 2, 0, 1 - h) };
+  };
+
   const handlePagePointerDown = (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => {
-    if (!pdfDoc) return;
-    if ((event.target as HTMLElement).closest(".annotation")) return;
+    if (!pdfDoc || event.button !== 0 || !event.isPrimary) return;
     const point = pagePoint(event, event.currentTarget);
     const page = pageIndex + 1;
     setActivePage(page);
-    const annotationAtPoint = annotations
-      .filter((annotation): annotation is Annotation & BaseAnnotation => annotation.type !== "draw" && annotation.page === page)
-      .find((annotation) => point.x >= annotation.x && point.x <= annotation.x + annotation.w && point.y >= annotation.y && point.y <= annotation.y + annotation.h);
-    const formZone = formZones.find(
-      (zone) => zone.page === page && point.x >= zone.x && point.x <= zone.x + zone.w && point.y >= zone.y && point.y <= zone.y + zone.h,
-    );
-    const lineZone = lineZones.find(
-      (zone) => zone.page === page && point.x >= zone.x && point.x <= zone.x + zone.w && point.y >= zone.y && point.y <= zone.y + zone.h,
-    );
+    if (selectedId && (tool === "text" || tool === "field")) {
+      setSelectedId(null);
+      setEditingId(null);
+      return;
+    }
 
     if (tool === "eraser") {
       const eraserRadius = eraserSize / Math.max(event.currentTarget.clientWidth, 1);
       activeEraseRef.current = true;
-      eraseStartAnnotationsRef.current = annotationsRef.current;
-      eraseChangedRef.current = false;
+      gestureStartRef.current = annotationsRef.current;
       setEraserPreview({ page, x: point.x, y: point.y });
-      setAnnotations((current) => {
-        const next = eraseDrawingsAt(current, page, point, eraserRadius);
-        if (next !== current) {
-          suppressHistoryRef.current = true;
-          eraseChangedRef.current = true;
-          annotationsRef.current = next;
-        }
-        return next;
-      });
+      changeAnnotations((current) => eraseDrawingsAt(current, page, point, eraserRadius), false);
+      setSelectedId(null);
+      setEditingId(null);
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
 
     if (tool === "select") {
-      if (annotationAtPoint) {
-        setSelectedId(annotationAtPoint.id);
-        setEditingId(isTextAnnotation(annotationAtPoint) || annotationAtPoint.type === "field" ? annotationAtPoint.id : null);
-        return;
-      }
-      if (formZone) {
-        if (formZone.fieldType === "Btn") {
-          addAnnotation({
-            id: uid("checkbox"),
-            page,
-            type: "checkbox",
-            x: formZone.x,
-            y: formZone.y,
-            w: formZone.w,
-            h: formZone.h,
-            checked: isCheckedFieldValue(formZone.value),
-            mark: "check",
-            sourceFieldName: formZone.name,
-          });
-          return;
-        }
-        addAnnotation({
-          id: uid("field"),
-          page,
-          type: "field",
-          x: formZone.x,
-          y: formZone.y,
-          w: formZone.w,
-          h: formZone.h,
-          name: formZone.name,
-          value: formZone.value ?? "",
-          fontSize: fieldFontSize(formZone, pageSizes[page - 1]),
-          sourceFieldName: formZone.name,
-        });
-        return;
-      }
-      if (lineZone) {
-        createTextAnnotation(page, { x: lineZone.x, y: lineZone.y }, { w: lineZone.w, h: lineZone.h, text: "", fontSize: 13 });
-        return;
-      }
       setSelectedId(null);
       setEditingId(null);
       return;
     }
 
     if (tool === "text") {
-      createTextAnnotation(page, lineZone ? { x: lineZone.x, y: lineZone.y } : point, lineZone ? { w: lineZone.w, h: lineZone.h, text: "", fontSize: 13 } : undefined);
+      const zone = fillZonesByPage.get(page)?.find((candidate) => candidate.kind === "text" &&
+        point.x >= candidate.x && point.x <= candidate.x + candidate.w &&
+        point.y >= candidate.y && point.y <= candidate.y + candidate.h);
+      if (zone) activateFillZone(zone);
+      else createTextAnnotation(page, point);
       return;
     }
 
@@ -1502,16 +1581,19 @@ function App() {
       return;
     }
 
-    if (["date", "checkbox", "radio", "checkmark"].includes(tool)) {
-      const size = tool === "checkmark" ? 0.035 : 0.032;
+    if (tool === "checkbox" || tool === "radio" || tool === "checkmark") {
+      const { width, height } = pageSizes[pageIndex];
+      const size = tool === "checkmark" ? 20 : 17;
+      const w = size / width;
+      const h = size / height;
       addAnnotation({
         id: uid(tool),
         page,
-        type: tool as ChoiceAnnotation["type"],
-        x: clamp(point.x - size / 2, 0, 1),
-        y: clamp(point.y - size / 2, 0, 1),
-        w: size,
-        h: size,
+        type: tool,
+        x: clamp(point.x - w / 2, 0, 1 - w),
+        y: clamp(point.y - h / 2, 0, 1 - h),
+        w,
+        h,
         checked: true,
         mark: tool === "checkmark" ? "check" : "x",
       });
@@ -1546,16 +1628,27 @@ function App() {
     }
 
     if (tool === "image") {
-      imageUploadRef.current?.click();
-      setStatus("Choose an image, then click the PDF again to position it.");
+      const placement = getImagePlacement(page, point);
+      if (!placement) {
+        imageUploadRef.current?.click();
+        return;
+      }
+      const { x, y, w, h, dataUrl, label } = placement;
+      addAnnotation({ id: uid("image"), page, type: "image", x, y, w, h, dataUrl, label });
+      setImageToPlace(null);
+      setImagePlacementPreview(null);
+      setTool("select");
+      setStatus("Image placed");
       return;
     }
 
     if (tool === "draw") {
       const id = uid("draw");
       activeDrawRef.current = id;
-      setAnnotations((current) => [...current, { id, page, type: "draw", points: [point], color: drawColor, width: drawWidth }]);
+      gestureStartRef.current = annotationsRef.current;
+      changeAnnotations((current) => [...current, { id, page, type: "draw", points: [point], color: drawColor, width: drawWidth }], false);
       setSelectedId(id);
+      setEditingId(null);
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -1563,7 +1656,7 @@ function App() {
     if (["whiteout", "highlight", "circle", "rectangle", "line", "arrow"].includes(tool)) {
       const id = uid(tool);
       draftRawSizeRef.current = { w: 0.001, h: 0.001 };
-      setDraftBox({ id, page, type: tool as DraftBox["type"], x: point.x, y: point.y, w: 0.001, h: 0.001 });
+      updateDraftBox({ id, page, type: tool as DraftBox["type"], x: point.x, y: point.y, w: 0.001, h: 0.001 });
       event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
@@ -1575,7 +1668,8 @@ function App() {
   };
 
   const handlePagePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (["checkbox", "radio", "checkmark"].includes(tool)) {
+    if (!event.isPrimary) return;
+    if (tool === "checkbox" || tool === "radio" || tool === "checkmark") {
       const point = pagePoint(event, event.currentTarget);
       setPlacementPreview({ page: Number(event.currentTarget.dataset.page), x: point.x, y: point.y, tool });
       setImagePlacementPreview(null);
@@ -1586,8 +1680,8 @@ function App() {
       if (asset) {
         setImagePlacementPreview({
           page: Number(event.currentTarget.dataset.page),
-          x: point.x,
-          y: point.y,
+          x: clamp(point.x - (tool === "signature" ? 0.28 : 0.12) / 2, 0, 1 - (tool === "signature" ? 0.28 : 0.12)),
+          y: clamp(point.y - (tool === "signature" ? 0.08 : 0.06) / 2, 0, 1 - (tool === "signature" ? 0.08 : 0.06)),
           w: tool === "signature" ? 0.28 : 0.12,
           h: tool === "signature" ? 0.08 : 0.06,
           dataUrl: asset.dataUrl,
@@ -1595,6 +1689,9 @@ function App() {
         });
       }
       setPlacementPreview(null);
+    } else if (tool === "image") {
+      const point = pagePoint(event, event.currentTarget);
+      setImagePlacementPreview(getImagePlacement(Number(event.currentTarget.dataset.page), point));
     } else if (tool === "eraser") {
       const point = pagePoint(event, event.currentTarget);
       setEraserPreview({ page: Number(event.currentTarget.dataset.page), x: point.x, y: point.y });
@@ -1606,45 +1703,35 @@ function App() {
       const page = Number(event.currentTarget.dataset.page);
       const eraserRadius = eraserSize / Math.max(event.currentTarget.clientWidth, 1);
       setEraserPreview({ page, x: point.x, y: point.y });
-      setAnnotations((current) => {
-        const next = eraseDrawingsAt(current, page, point, eraserRadius);
-        if (next !== current) {
-          suppressHistoryRef.current = true;
-          eraseChangedRef.current = true;
-          annotationsRef.current = next;
-        }
-        return next;
-      });
+      changeAnnotations((current) => eraseDrawingsAt(current, page, point, eraserRadius), false);
       return;
     }
 
     if (tool === "draw" && activeDrawRef.current) {
       const point = pagePoint(event, event.currentTarget);
       const id = activeDrawRef.current;
-      setAnnotations((current) =>
+      changeAnnotations((current) =>
         current.map((annotation) =>
           annotation.id === id && annotation.type === "draw"
             ? { ...annotation, points: [...annotation.points, point] }
             : annotation,
-        ),
+        ), false,
       );
       return;
     }
 
-    if (draftBox) {
+    const drawingBox = draftBoxRef.current;
+    if (drawingBox) {
       const point = pagePoint(event, event.currentTarget);
-      setDraftBox((current) => {
-        if (!current) return null;
-        let w = point.x - current.x;
-        let h = point.y - current.y;
-        draftRawSizeRef.current = { w, h };
-        if (event.shiftKey && (current.type === "circle" || current.type === "rectangle" || current.type === "whiteout" || current.type === "highlight")) {
-          const size = Math.min(Math.abs(w), Math.abs(h));
-          w = Math.sign(w || 1) * size;
-          h = Math.sign(h || 1) * size;
-        }
-        return { ...current, w, h };
-      });
+      let w = point.x - drawingBox.x;
+      let h = point.y - drawingBox.y;
+      draftRawSizeRef.current = { w, h };
+      if (event.shiftKey && isConstrainedShape(drawingBox.type)) {
+        const size = Math.min(Math.abs(w), Math.abs(h));
+        w = Math.sign(w || 1) * size;
+        h = Math.sign(h || 1) * size;
+      }
+      updateDraftBox({ ...drawingBox, w, h });
     }
   };
 
@@ -1659,32 +1746,14 @@ function App() {
   }, [activeInitials, activeSignature, activeTabId, clearPlacementPreviews, tool]);
 
   const finishPagePointer = () => {
-    if (activeDrawRef.current) {
-      activeDrawRef.current = null;
-    }
-    if (activeEraseRef.current) {
-      const beforeErase = eraseStartAnnotationsRef.current;
-      const afterErase = annotationsRef.current;
-      if (beforeErase && eraseChangedRef.current) {
-        historyRef.current = [...historyRef.current.slice(-39), beforeErase];
-        redoRef.current = [];
-        lastAnnotationsRef.current = afterErase;
-        setIsDirty(true);
-        setTabs((current) =>
-          current.map((tab) =>
-            tab.id === activeTabIdRef.current
-              ? { ...tab, annotations: afterErase, isDirty: true, history: historyRef.current, redo: redoRef.current }
-              : tab,
-          ),
-        );
-        void window.pdfFillerDesktop?.setDirty(true);
-      }
-    }
+    if (activeDrawRef.current || activeEraseRef.current) finishAnnotationGesture();
+    activeDrawRef.current = null;
     activeEraseRef.current = false;
-    eraseStartAnnotationsRef.current = null;
-    eraseChangedRef.current = false;
     setEraserPreview(null);
+    const draftBox = draftBoxRef.current;
     if (!draftBox) return;
+    updateDraftBox(null);
+    draftRawSizeRef.current = null;
     const normalized = {
       x: draftBox.w < 0 ? draftBox.x + draftBox.w : draftBox.x,
       y: draftBox.h < 0 ? draftBox.y + draftBox.h : draftBox.y,
@@ -1705,7 +1774,6 @@ function App() {
         reverseX: draftBox.w < 0,
         reverseY: draftBox.h < 0,
       });
-      setDraftBox(null);
       return;
     }
     const isShape = draftBox.type === "circle" || draftBox.type === "rectangle";
@@ -1729,8 +1797,6 @@ function App() {
       strokeOpacity: isShape ? shapeStrokeOpacity : 1,
       strokeWidth: isShape ? shapeStrokeWidth : 2,
     });
-    setDraftBox(null);
-    draftRawSizeRef.current = null;
   };
 
   const startAnnotationDrag = (
@@ -1740,16 +1806,19 @@ function App() {
     mode: "move" | "resize" | "rotate",
   ) => {
     event.stopPropagation();
+    if (event.button !== 0 || !event.isPrimary || annotation.type === "draw") return;
     if (editingId === annotation.id && mode === "move") return;
+    setActivePage(annotation.page);
     setSelectedId(annotation.id);
-    dragStartAnnotationsRef.current = annotationsRef.current;
-    dragChangedRef.current = false;
+    if (editingId !== annotation.id) setEditingId(null);
+    gestureStartRef.current = annotationsRef.current;
     const annotationElement = (event.currentTarget as HTMLElement).closest(".annotation") as HTMLElement | null;
     const rect = annotationElement?.getBoundingClientRect();
     const centerX = rect ? rect.left + rect.width / 2 : undefined;
     const centerY = rect ? rect.top + rect.height / 2 : undefined;
     dragRef.current = {
       id: annotation.id,
+      pointerId: event.pointerId,
       mode,
       startX: event.clientX,
       startY: event.clientY,
@@ -1761,59 +1830,48 @@ function App() {
       startAngle: centerX !== undefined && centerY !== undefined ? Math.atan2(event.clientY - centerY, event.clientX - centerX) : undefined,
     };
     window.addEventListener("pointermove", moveAnnotation);
-    window.addEventListener("pointerup", stopAnnotationDrag, { once: true });
+    window.addEventListener("pointerup", stopAnnotationDrag);
+    window.addEventListener("pointercancel", stopAnnotationDrag);
   };
 
   const moveAnnotation = useCallback((event: PointerEvent) => {
     const drag = dragRef.current;
-    if (!drag) return;
+    if (!drag || event.pointerId !== drag.pointerId) return;
     const dx = (event.clientX - drag.startX) / drag.pageWidth;
     const dy = (event.clientY - drag.startY) / drag.pageHeight;
     const original = drag.original;
-    dragChangedRef.current = true;
-    suppressHistoryRef.current = true;
-    setAnnotations((current) => {
-      const next = current.map((annotation) => {
-        if (annotation.id !== drag.id || annotation.type === "draw") return annotation;
-        if (drag.mode === "move") {
-          return { ...annotation, x: clamp((original as BaseAnnotation).x + dx, 0, 0.98), y: clamp((original as BaseAnnotation).y + dy, 0, 0.98) } as Annotation;
-        }
-        if (drag.mode === "rotate" && drag.centerX !== undefined && drag.centerY !== undefined && drag.startAngle !== undefined) {
-          const angle = Math.atan2(event.clientY - drag.centerY, event.clientX - drag.centerX);
-          const delta = (angle - drag.startAngle) * 180 / Math.PI;
-          return { ...annotation, rotation: Math.round(((original as BaseAnnotation).rotation ?? 0) + delta) } as Annotation;
-        }
-        return { ...annotation, w: clamp((original as BaseAnnotation).w + dx, 0.015, 1), h: clamp((original as BaseAnnotation).h + dy, 0.015, 1) } as Annotation;
-      });
-      annotationsRef.current = next;
+    if (annotationsRef.current === gestureStartRef.current && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 2) return;
+    changeAnnotations((current) => {
+      const index = current.findIndex((annotation) => annotation.id === drag.id);
+      const annotation = current[index];
+      if (!annotation || annotation.type === "draw") return current;
+      let patch: Partial<BaseAnnotation>;
+      if (drag.mode === "move") {
+        patch = { x: clamp(original.x + dx, 0, Math.max(1 - original.w, 0)), y: clamp(original.y + dy, 0, Math.max(1 - original.h, 0)) };
+      } else if (drag.mode === "rotate" && drag.centerX !== undefined && drag.centerY !== undefined && drag.startAngle !== undefined) {
+        const angle = Math.atan2(event.clientY - drag.centerY, event.clientX - drag.centerX);
+        const rotation = Math.round((original.rotation ?? 0) + (angle - drag.startAngle) * 180 / Math.PI);
+        patch = { rotation: ((rotation % 360) + 540) % 360 - 180 };
+      } else {
+        patch = { w: clamp(original.w + dx, 0.015, Math.max(0.015, 1 - original.x)), h: clamp(original.h + dy, 0.015, Math.max(0.015, 1 - original.y)) };
+      }
+      if (Object.entries(patch).every(([key, value]) => annotation[key as keyof BaseAnnotation] === value)) return current;
+      const next = current.slice();
+      next[index] = { ...annotation, ...patch };
       return next;
-    });
-  }, []);
+    }, false);
+  }, [changeAnnotations]);
 
-  const stopAnnotationDrag = useCallback(() => {
-    const beforeDrag = dragStartAnnotationsRef.current;
-    const afterDrag = annotationsRef.current;
-    if (beforeDrag && dragChangedRef.current) {
-      historyRef.current = [...historyRef.current.slice(-39), beforeDrag];
-      redoRef.current = [];
-      lastAnnotationsRef.current = afterDrag;
-      setIsDirty(true);
-      setTabs((current) =>
-        current.map((tab) =>
-          tab.id === activeTabIdRef.current
-            ? { ...tab, annotations: afterDrag, isDirty: true, history: historyRef.current, redo: redoRef.current }
-            : tab,
-        ),
-      );
-      void window.pdfFillerDesktop?.setDirty(true);
-    }
-    dragStartAnnotationsRef.current = null;
-    dragChangedRef.current = false;
+  const stopAnnotationDrag = useCallback(function stop(event?: PointerEvent) {
+    if (event && event.pointerId !== dragRef.current?.pointerId) return;
+    if (dragRef.current) finishAnnotationGesture();
     dragRef.current = null;
     window.removeEventListener("pointermove", moveAnnotation);
-  }, [moveAnnotation]);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+  }, [finishAnnotationGesture, moveAnnotation]);
 
-  useEffect(() => () => window.removeEventListener("pointermove", moveAnnotation), [moveAnnotation]);
+  useEffect(() => () => stopAnnotationDrag(), [stopAnnotationDrag]);
 
   const importDetectedText = () => {
     if (!textZones.length) {
@@ -1840,7 +1898,7 @@ function App() {
         fontSize: clamp(zone.fontSize, 7, 28),
         bold: false,
     }));
-    setAnnotations((current) => [...current, ...imports]);
+    changeAnnotations((current) => [...current, ...imports]);
     setStatus("Editable text boxes added.");
   };
 
@@ -1905,7 +1963,7 @@ function App() {
     const entries = parsePrefillEntries(prefillText);
     if (!entries.length || !pageSizes.length) return;
     const rows = entries.map((entry) => `${entry.key}: ${entry.value}`);
-    setAnnotations((current) => [
+    changeAnnotations((current) => [
       ...current,
       ...rows.map<TextAnnotation>((row, index) => ({
         id: uid("prefill"),
@@ -1923,13 +1981,15 @@ function App() {
     ]);
   };
 
-  const buildPdfBytes = async () => {
+  const buildPdfBytes = async (items = annotations) => {
     if (!pdfBytes) return null;
     const pdf = await PDFDocument.load(pdfBytes.slice(0));
     const font = await pdf.embedFont(StandardFonts.Helvetica);
     const boldFont = await pdf.embedFont(StandardFonts.HelveticaBold);
     const form = pdf.getForm();
+    const fieldNames = new Set(form.getFields().map((field) => field.getName()));
     const prefillEntries = parsePrefillEntries(prefillText);
+    const radioChanges = new Map<string, string | null>();
 
     if (prefillEntries.length) {
       const fields = form.getFields();
@@ -1950,12 +2010,13 @@ function App() {
       form.updateFieldAppearances(font);
     }
 
-    for (const annotation of annotations) {
+    for (const annotation of items) {
       const page = pdf.getPage(annotation.page - 1);
       const { width, height } = page.getSize();
 
       if (annotation.type === "field") {
         if (annotation.sourceFieldName) {
+          if (annotation.readOnly) continue;
           try {
             form.getTextField(annotation.sourceFieldName).setText(annotation.value);
           } catch {
@@ -1964,7 +2025,11 @@ function App() {
           form.updateFieldAppearances(font);
           continue;
         }
-        const field = form.createTextField(annotation.name || uid("Field"));
+        const requestedName = annotation.name.trim() || "Field";
+        let fieldName = requestedName;
+        for (let suffix = 2; fieldNames.has(fieldName); suffix += 1) fieldName = `${requestedName}_${suffix}`;
+        fieldNames.add(fieldName);
+        const field = form.createTextField(fieldName);
         field.setText(annotation.value);
         field.addToPage(page, {
           x: annotation.x * width,
@@ -1980,6 +2045,12 @@ function App() {
       }
 
       if (isChoiceAnnotation(annotation) && annotation.sourceFieldName) {
+        if (annotation.checked === annotation.originalChecked) continue;
+        if (annotation.type === "radio") {
+          if (annotation.checked && annotation.sourceOption) radioChanges.set(annotation.sourceFieldName, annotation.sourceOption);
+          else if (!radioChanges.has(annotation.sourceFieldName)) radioChanges.set(annotation.sourceFieldName, null);
+          continue;
+        }
         try {
           const checkbox = form.getCheckBox(annotation.sourceFieldName);
           if (annotation.checked) checkbox.check();
@@ -1991,7 +2062,20 @@ function App() {
       }
     }
 
-    const hasSignatureOverlay = annotations.some((annotation) => annotation.type === "signature" || annotation.type === "initials");
+    for (const [name, option] of radioChanges) {
+      const group = form.getFieldMaybe(name);
+      if (!(group instanceof PDFRadioGroup)) continue;
+      if (option === null) group.clear();
+      else if (group.getOptions().includes(option)) group.select(option);
+      else {
+        // PDF.js exposes widget appearance names. Some forms store separate export values.
+        const buttonIndex = group.acroField.getWidgets().findIndex((widget) => widget.getOnValue()?.decodeText() === option);
+        const exportValue = group.getOptions()[buttonIndex];
+        if (exportValue !== undefined) group.select(exportValue);
+      }
+    }
+
+    const hasSignatureOverlay = items.some((annotation) => annotation.type === "signature" || annotation.type === "initials");
     if (hasSignatureOverlay) {
       try {
         form.flatten({ updateFieldAppearances: true });
@@ -2001,27 +2085,49 @@ function App() {
     }
 
     const exportAnnotations = [
-      ...annotations.filter((annotation) =>
+      ...items.filter((annotation) =>
         annotation.type !== "field" &&
         !(isChoiceAnnotation(annotation) && annotation.sourceFieldName) &&
         annotation.type !== "signature" &&
         annotation.type !== "initials",
       ),
-      ...annotations.filter((annotation) => annotation.type === "signature" || annotation.type === "initials"),
+      ...items.filter((annotation) => annotation.type === "signature" || annotation.type === "initials"),
     ];
 
     for (const annotation of exportAnnotations) {
       const page = pdf.getPage(annotation.page - 1);
-      const { width, height } = page.getSize();
+      const sourcePage = await pdfDoc.getPage(annotation.page);
+      const viewport = sourcePage.getViewport({ scale: 1 });
+      const { width, height } = viewport;
+      const [originX, originY] = viewport.convertToPdfPoint(0, height);
+      const [rightX, rightY] = viewport.convertToPdfPoint(1, height);
+      const [upX, upY] = viewport.convertToPdfPoint(0, height - 1);
+      page.pushOperators(pushGraphicsState(), concatTransformationMatrix(
+        rightX - originX, rightY - originY, upX - originX, upY - originY, originX, originY,
+      ));
+      if (annotation.type !== "draw" && annotation.rotation && !(annotation.type === "watermark" && annotation.repeat)) {
+        const x = (annotation.x + annotation.w / 2) * width;
+        const y = height - (annotation.y + annotation.h / 2) * height;
+        const angle = -annotation.rotation * Math.PI / 180;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        page.pushOperators(concatTransformationMatrix(cos, sin, -sin, cos, x - x * cos + y * sin, y - x * sin - y * cos));
+      }
 
       if (isTextAnnotation(annotation)) {
+        if (annotation.detectedField) {
+          page.pushOperators(rectangle(
+            annotation.x * width, height - (annotation.y + annotation.h) * height, annotation.w * width, annotation.h * height,
+          ), clip(), endPath());
+        }
         if (annotation.background && annotation.type !== "detectedText") {
+          const background = hexToRgb(annotation.background);
           page.drawRectangle({
             x: annotation.x * width,
             y: height - annotation.y * height - annotation.h * height,
             width: annotation.w * width,
             height: annotation.h * height,
-            color: rgb(1, 1, 1),
+            color: rgb(background.r, background.g, background.b),
             opacity: annotation.type === "watermark" ? 0 : 1,
           });
         }
@@ -2042,10 +2148,11 @@ function App() {
                 font: annotation.bold ? boldFont : font,
                 color: rgb(color.r, color.g, color.b),
                 opacity,
-                rotate: degrees(annotation.rotation ?? -35),
+                rotate: degrees(-(annotation.rotation ?? -35)),
               });
             }
           }
+          page.pushOperators(popGraphicsState());
           continue;
         }
         page.drawText(annotation.text || " ", {
@@ -2055,7 +2162,6 @@ function App() {
           font: annotation.bold ? boldFont : font,
           color: rgb(color.r, color.g, color.b),
           opacity,
-          rotate: annotation.rotation ? degrees(annotation.rotation) : annotation.type === "watermark" ? degrees(-35) : undefined,
           maxWidth: annotation.w * width,
           lineHeight: annotation.fontSize * 1.18,
         });
@@ -2063,18 +2169,24 @@ function App() {
 
       if (isImageAnnotation(annotation)) {
         const imageBytes = await fetch(annotation.dataUrl).then((response) => response.arrayBuffer());
-        const image = await pdf.embedPng(imageBytes);
+        const image = /^data:image\/jpe?g[;,]/i.test(annotation.dataUrl) ? await pdf.embedJpg(imageBytes) : await pdf.embedPng(imageBytes);
+        const scale = Math.min(annotation.w * width / image.width, annotation.h * height / image.height);
+        const imageWidth = image.width * scale;
+        const imageHeight = image.height * scale;
         page.drawImage(image, {
-          x: annotation.x * width,
-          y: height - annotation.y * height - annotation.h * height,
-          width: annotation.w * width,
-          height: annotation.h * height,
-          rotate: annotation.rotation ? degrees(annotation.rotation) : undefined,
+          x: (annotation.x + annotation.w / 2) * width - imageWidth / 2,
+          y: height - (annotation.y + annotation.h / 2) * height - imageHeight / 2,
+          width: imageWidth,
+          height: imageHeight,
         });
       }
 
       if (annotation.type === "draw") {
         const color = hexToRgb(annotation.color);
+        if (annotation.points.length === 1) {
+          const [point] = annotation.points;
+          page.drawCircle({ x: point.x * width, y: height - point.y * height, size: annotation.width / 2, color: rgb(color.r, color.g, color.b) });
+        }
         for (let index = 1; index < annotation.points.length; index += 1) {
           const previous = annotation.points[index - 1];
           const current = annotation.points[index];
@@ -2083,6 +2195,7 @@ function App() {
             end: { x: current.x * width, y: height - current.y * height },
             thickness: annotation.width,
             color: rgb(color.r, color.g, color.b),
+            lineCap: LineCapStyle.Round,
           });
         }
       }
@@ -2095,7 +2208,6 @@ function App() {
           y: height - annotation.y * height - annotation.h * height,
           width: annotation.w * width,
           height: annotation.h * height,
-          rotate: annotation.rotation ? degrees(annotation.rotation) : undefined,
         };
         const filled = annotation.filled ?? !annotation.stroke;
         const outlined = annotation.outlined ?? Boolean(annotation.stroke);
@@ -2119,39 +2231,43 @@ function App() {
 
       if (isChoiceAnnotation(annotation)) {
         const box = Math.min(annotation.w * width, annotation.h * height);
-        const x = annotation.x * width;
-        const y = height - annotation.y * height - box;
+        const centerX = (annotation.x + annotation.w / 2) * width;
+        const centerY = height - (annotation.y + annotation.h / 2) * height;
+        const color = hexToRgb(choiceInk);
+        const ink = rgb(color.r, color.g, color.b);
+        const pointOnPage = ([x, y]: number[]) => ({
+          x: centerX + (x / 100 - 0.5) * box,
+          y: centerY + (0.5 - y / 100) * box,
+        });
         if (annotation.type === "radio") {
-          page.drawEllipse({ x: x + box / 2, y: y + box / 2, xScale: box / 2, yScale: box / 2, borderColor: rgb(0.07, 0.09, 0.12), borderWidth: 1.5 });
-          if (annotation.checked) page.drawEllipse({ x: x + box / 2, y: y + box / 2, xScale: box / 4, yScale: box / 4, color: rgb(0.07, 0.09, 0.12) });
-        } else if (annotation.type === "checkmark") {
-          page.drawText(annotation.mark === "x" ? "X" : "✓", { x, y, size: box, font: boldFont, color: rgb(0.07, 0.09, 0.12) });
-        } else {
-          page.drawRectangle({ x, y, width: box, height: box, borderColor: rgb(0.07, 0.09, 0.12), borderWidth: 1.4, color: rgb(1, 1, 1) });
-          if (annotation.checked) page.drawText(annotation.mark === "check" ? "✓" : "X", { x: x + box * 0.12, y: y + box * 0.02, size: box * 0.9, font: boldFont, color: rgb(0.07, 0.09, 0.12) });
+          page.drawCircle({ x: centerX, y: centerY, size: box * 0.43, borderColor: ink, borderWidth: box * 0.08 });
+          if (annotation.checked) page.drawCircle({ x: centerX, y: centerY, size: box * 0.23, color: ink });
+          page.pushOperators(popGraphicsState());
+          continue;
+        }
+        if (annotation.type === "checkbox") {
+          page.drawRectangle({ ...pointOnPage([8, 92]), width: box * 0.84, height: box * 0.84, borderColor: ink, borderWidth: box * 0.08 });
+        }
+        if (annotation.checked) {
+          const mark = annotation.mark ?? (annotation.type === "checkmark" ? "check" : "x");
+          for (const points of mark === "check" ? [tickPoints] : crossPoints) {
+            for (let index = 1; index < points.length; index += 1) {
+              page.drawLine({ start: pointOnPage(points[index - 1]), end: pointOnPage(points[index]), thickness: box * 0.12, color: ink, lineCap: LineCapStyle.Round });
+            }
+          }
         }
       }
 
       if (annotation.type === "arrow" || annotation.type === "line") {
         const color = hexToRgb(annotation.color);
-        let start = {
+        const start = {
           x: (annotation.x + (annotation.reverseX ? annotation.w : 0)) * width,
           y: height - (annotation.y + (annotation.reverseY ? annotation.h : 0)) * height,
         };
-        let end = {
+        const end = {
           x: (annotation.x + (annotation.reverseX ? 0 : annotation.w)) * width,
           y: height - (annotation.y + (annotation.reverseY ? 0 : annotation.h)) * height,
         };
-        if (annotation.rotation) {
-          const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
-          const radians = annotation.rotation * Math.PI / 180;
-          const rotatePoint = (point: Point) => ({
-            x: center.x + (point.x - center.x) * Math.cos(radians) - (point.y - center.y) * Math.sin(radians),
-            y: center.y + (point.x - center.x) * Math.sin(radians) + (point.y - center.y) * Math.cos(radians),
-          });
-          start = rotatePoint(start);
-          end = rotatePoint(end);
-        }
         page.drawLine({ start, end, thickness: annotation.width, color: rgb(color.r, color.g, color.b) });
         if (annotation.type === "arrow") {
           const angle = Math.atan2(end.y - start.y, end.x - start.x);
@@ -2201,77 +2317,82 @@ function App() {
           }
         }
       }
+      page.pushOperators(popGraphicsState());
     }
 
     return pdf.save();
   };
 
-  const downloadPdf = async () => {
-    const output = await buildPdfBytes();
-    if (!output) return;
+  const downloadOutput = (output: Uint8Array, name: string) => {
     const outputBuffer = new ArrayBuffer(output.byteLength);
     new Uint8Array(outputBuffer).set(output);
     const blob = new Blob([outputBuffer], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = fileName.replace(/\.pdf$/i, "") + "-filled.pdf";
+    anchor.download = name;
     anchor.click();
     URL.revokeObjectURL(url);
-    setStatus("Exported PDF.");
+  };
+
+  const downloadPdf = async () => {
+    try {
+      const output = await buildPdfBytes();
+      if (!output) return;
+      downloadOutput(output, basePdfName(fileName) + "-filled.pdf");
+      setStatus("Exported PDF");
+    } catch (error) {
+      setStatus(`Could not export PDF. ${error instanceof Error ? error.message : ""}`);
+    }
   };
 
   const savePdf = async (mode: "save" | "saveAs" = "save") => {
-    const output = await buildPdfBytes();
-    if (!output) return false;
-    const defaultName = currentPath && mode === "save" ? fileName : fileName.replace(/\.pdf$/i, "") + "-filled.pdf";
-    if (window.pdfFillerDesktop) {
-      const result = await window.pdfFillerDesktop.savePdfFile({
-        defaultName,
-        title: mode === "saveAs" ? "Save PDF As" : "Save PDF",
-        targetPath: mode === "save" ? currentPath : null,
-        protectedPath: mode === "saveAs" ? currentPath : null,
-        bytes: Array.from(output),
-      });
-      if (result.blocked) {
-        setStatus(result.reason || "Choose a different file name so the original PDF is not overwritten.");
-        return false;
-      }
-      if (result.canceled) {
-        setStatus("Save canceled.");
-        return false;
-      }
-      if (result.filePath) setStatus(`Saved ${result.filePath}. You can keep editing placed text in this window.`);
-      if (result.filePath) {
-        setCurrentPath(result.filePath);
-        setFileName(result.filePath.split(/[\\/]/).pop() || fileName);
-      }
-      if (!result.canceled) {
-        setIsDirty(false);
-        setTabs((current) => {
-          const next = current.map((tab) => (tab.id === activeTabId ? {
-            ...tab,
-            currentPath: result.filePath ?? tab.currentPath,
-            fileName: result.filePath?.split(/[\\/]/).pop() || tab.fileName,
-            isDirty: false,
-          } : tab));
-          void window.pdfFillerDesktop?.setDirty(next.some((tab) => tab.isDirty));
-          return next;
+    if (!activeTabId || savingRef.current) return false;
+    savingRef.current = true;
+    const saved = annotationsRef.current;
+    const defaultName = currentPath && mode === "save" ? fileName : basePdfName(fileName) + "-filled.pdf";
+    try {
+      const output = await buildPdfBytes(saved);
+      if (!output) return false;
+      let path = currentPath;
+      let name = fileName;
+      if (window.pdfFillerDesktop) {
+        const result = await window.pdfFillerDesktop.savePdfFile({
+          defaultName,
+          title: mode === "saveAs" ? "Save PDF As" : "Save PDF",
+          targetPath: mode === "save" ? currentPath : null,
+          protectedPath: mode === "saveAs" ? currentPath : null,
+          bytes: Array.from(output),
         });
+        if (result.canceled || result.blocked) {
+          setStatus(result.reason || "Save canceled");
+          return false;
+        }
+        path = result.filePath ?? currentPath;
+        name = path?.split(/[\\/]/).pop() || fileName;
+      } else {
+        downloadOutput(output, defaultName);
       }
-      return !result.canceled;
+      const active = activeTabIdRef.current === activeTabId && pdfDocRef.current === pdfDoc;
+      const currentItems = active ? annotationsRef.current : null;
+      const unchanged = currentItems === saved;
+      if (active) {
+        savedAnnotationsRef.current = saved;
+        setCurrentPath(path);
+        setFileName(name);
+        setIsDirty(!unchanged);
+        setStatus(unchanged ? `Saved ${path ? name : defaultName}` : "Saved. Newer changes are still unsaved.");
+      }
+      setTabs((current) => current.map((tab) => tab.id === activeTabId && tab.pdfDoc === pdfDoc
+        ? { ...tab, currentPath: path, fileName: name, savedAnnotations: saved, isDirty: (currentItems ?? tab.annotations) !== saved }
+        : tab));
+      return unchanged;
+    } catch (error) {
+      setStatus(`Could not save PDF. ${error instanceof Error ? error.message : ""}`);
+      return false;
+    } finally {
+      savingRef.current = false;
     }
-    const outputBuffer = new ArrayBuffer(output.byteLength);
-    new Uint8Array(outputBuffer).set(output);
-    const blob = new Blob([outputBuffer], { type: "application/pdf" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = defaultName;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setStatus(`${mode === "saveAs" ? "Saved as" : "Saved"} ${defaultName}. You can keep editing placed text in this window.`);
-    return true;
   };
 
   const printPdf = async () => {
@@ -2304,7 +2425,23 @@ function App() {
   };
 
   savePdfRef.current = savePdf;
-  printPdfRef.current = printPdf;
+  printPdfRef.current = async () => {
+    try {
+      await printPdf();
+    } catch (error) {
+      setStatus(`Could not print PDF. ${error instanceof Error ? error.message : ""}`);
+    }
+  };
+  saveBeforeDesktopCloseRef.current = async () => {
+    if (isDirty && !await savePdf()) return;
+    const next = tabs.find((tab) => tab.id !== activeTabId && tab.isDirty);
+    if (next) {
+      activateTab(next.id);
+      setStatus("Save this document before closing.");
+      return;
+    }
+    void window.pdfFillerDesktop?.closeAfterSave();
+  };
   saveAndCloseRef.current = async () => {
     const tabId = activeTabIdRef.current;
     if (!tabId) return;
@@ -2438,7 +2575,7 @@ function App() {
   };
 
   const deleteActivePage = async () => {
-    if (!pdfBytes || pageSizes.length <= 1) {
+    if (!pdfBytes || !activeTabId || pageSizes.length <= 1) {
       setStatus("Open a multi-page PDF before deleting a page.");
       return;
     }
@@ -2451,26 +2588,26 @@ function App() {
     const pages = await output.copyPages(source, keep);
     pages.forEach((page) => output.addPage(page));
     const bytes = await output.save();
-    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
-    setAnnotations(nextAnnotations);
-    setStatus(`Deleted page ${activePage}.`);
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, {
+      tabId: activeTabId, annotations: nextAnnotations, activePage: Math.min(activePage, keep.length), status: `Deleted page ${activePage}.`,
+    });
   };
 
   const rotateActivePage = async (direction: -1 | 1 = 1) => {
-    if (!pdfBytes) return;
+    if (!pdfBytes || !activeTabId) return;
     const pdf = await PDFDocument.load(pdfBytes.slice(0));
     const page = pdf.getPage(activePage - 1);
     const current = page.getRotation().angle;
     page.setRotation(degrees((current + direction * 90 + 360) % 360));
     const bytes = await pdf.save();
-    const preservedAnnotations = annotations.map((annotation) => rotateAnnotation(annotation, activePage, direction));
-    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
-    setAnnotations(preservedAnnotations);
-    setStatus(`Rotated page ${activePage} ${direction === 1 ? "right" : "left"}.`);
+    const preservedAnnotations = annotations.map((annotation) => rotateAnnotation(annotation, activePage, pageSizes[activePage - 1], direction));
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, {
+      tabId: activeTabId, annotations: preservedAnnotations, activePage, status: `Rotated page ${activePage} ${direction === 1 ? "right" : "left"}.`,
+    });
   };
 
   const organizeCurrentPages = async (order: number[]) => {
-    if (!pdfBytes || order.length !== pageSizes.length) {
+    if (!pdfBytes || !activeTabId || order.length !== pageSizes.length) {
       setStatus("Open a PDF before organizing pages.");
       return;
     }
@@ -2504,29 +2641,15 @@ function App() {
     pages.forEach((page) => output.addPage(page));
     const bytes = await output.save();
 
-    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, { replaceActive: true });
-    suppressHistoryRef.current = true;
-    lastAnnotationsRef.current = nextAnnotations;
-    annotationsRef.current = nextAnnotations;
-    setAnnotations(nextAnnotations);
-    setActivePage(nextActivePage);
-    setIsDirty(true);
-    setTabs((current) => {
-      const nextTabs = current.map((tab) => (
-        tab.id === activeTabId
-          ? { ...tab, annotations: nextAnnotations, activePage: nextActivePage, isDirty: true, status: "Pages reordered." }
-          : tab
-      ));
-      void window.pdfFillerDesktop?.setDirty(nextTabs.some((tab) => tab.isDirty));
-      return nextTabs;
+    await loadPdfBytes(payloadToArrayBuffer(bytes), fileName, currentPath, {
+      tabId: activeTabId, annotations: nextAnnotations, activePage: nextActivePage, status: "Pages reordered.",
     });
     setOrganizeOpen(false);
-    setStatus("Pages reordered.");
   };
 
   const addPageNumbers = () => {
     if (!pageSizes.length) return;
-    setAnnotations((current) => [
+    changeAnnotations((current) => [
       ...current,
       ...pageSizes.map<TextAnnotation>((_, index) => ({
         id: uid("pageNumber"),
@@ -2550,14 +2673,14 @@ function App() {
     if (item === "Open PDF") document.getElementById("pdf-upload")?.click();
     if (item === "Save") void savePdf();
     if (item === "Save As") void savePdf("saveAs");
-    if (item === "Print") void printPdf();
+    if (item === "Export PDF") void downloadPdf();
+    if (item === "Print") void printPdfRef.current();
     if (item === "Merge PDFs") setMergeOpen(true);
     if (item === "Split PDF" || item === "Split") setSplitOpen(true);
-    if (item === "Extract PDF pages") setExtractPagesOpen(true);
-    if (item === "Delete PDF pages" || item === "Remove Pages" || item === "Remove pages") setRemovePagesOpen(true);
-    if (item === "Rotate PDF" || item === "Rotate PDF pages") void rotateActivePage();
-    if (item === "Organize Pages") setOrganizeOpen(true);
-    if (item === "Add page numbers" || item === "Number PDF pages") addPageNumbers();
+    if (item === "Extract pages from file") setExtractPagesOpen(true);
+    if (item === "Remove pages from file") setRemovePagesOpen(true);
+    if (item === "Organize pages") setOrganizeOpen(true);
+    if (item === "Add page numbers") addPageNumbers();
     if (item === "Edit PDF") setTool("editText");
     if (item === "Check Text") void checkTextOnActivePage();
     if (item === "Add Text") setTool("text");
@@ -2567,11 +2690,6 @@ function App() {
     }
     if (item === "Erase") setTool("eraser");
     if (item === "Watermark") addWatermark();
-    if (item === "Sign Document") setTool("signature");
-    if (item === "Initials") setTool("initials");
-    if (/Word|PowerPoint|Excel|Compress|Unlock|Protect|OCR|Summarize|Translate|Markdown|Repair|Compare|Scan/i.test(item)) {
-      setStatus(`${item} needs a dedicated conversion/security engine. Local editing tools are available now.`);
-    }
   };
 
   const exportTemplate = () => {
@@ -2586,13 +2704,63 @@ function App() {
 
   const importTemplate = async (file: File) => {
     const data = JSON.parse(await file.text()) as { annotations: Annotation[] };
-    setAnnotations(data.annotations ?? []);
+    changeAnnotations(() => data.annotations ?? []);
   };
 
   const goToPage = (page: number) => {
+    const scroller = documentScrollerRef.current;
+    const tabPage = pageRefs.current[page];
+    if (!scroller || !tabPage) return;
+    scroller.scrollTop += tabPage.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 12;
     setActivePage(page);
-    pageRefs.current[page]?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+
+  const getFitZoom = (pageSize?: PageSize) => {
+    const scroller = documentScrollerRef.current;
+    if (!scroller || !pageSize) return 1;
+    const { paddingLeft, paddingRight } = getComputedStyle(scroller);
+    const width = scroller.clientWidth - parseFloat(paddingLeft) - parseFloat(paddingRight) - 12;
+    return clamp(Math.floor(width / pageSize.width * 100) / 100, 0.45, 2.5);
+  };
+
+  const updateActivePageFromScroll = () => {
+    if (scrollFrameRef.current) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = 0;
+      const scroller = documentScrollerRef.current;
+      if (!scroller || !pdfDocRef.current) return;
+      const bounds = scroller.getBoundingClientRect();
+      const targetY = bounds.top + Math.min(scroller.clientHeight * 0.25, 120);
+      let closestPage = 1;
+      let bestDistance = Infinity;
+      for (const node of Object.values(pageRefs.current)) {
+        if (!node) continue;
+        const rect = node.getBoundingClientRect();
+        const distance = Math.max(rect.top - targetY, targetY - rect.bottom, 0);
+        if (distance < bestDistance) {
+          closestPage = Number(node.dataset.page);
+          bestDistance = distance;
+        }
+        if (bestDistance === 0 || rect.top > targetY) break;
+      }
+      setActivePage(closestPage);
+    });
+  };
+
+  useLayoutEffect(() => {
+    const pending = pendingPageScrollRef.current;
+    const scroller = documentScrollerRef.current;
+    if (!pending || !scroller) return;
+    pendingPageScrollRef.current = null;
+    if (pending.scroll) {
+      scroller.scrollTo(pending.scroll.left, pending.scroll.top);
+    } else {
+      scroller.scrollTo(0, 0);
+      if (pending.page > 1) goToPage(pending.page);
+    }
+  }, [pdfDoc]);
+
+  useEffect(() => () => cancelAnimationFrame(scrollFrameRef.current), []);
 
   const zoomBy = useCallback((delta: number, clientX?: number, clientY?: number) => {
     const scroller = documentScrollerRef.current;
@@ -2601,7 +2769,7 @@ function App() {
         ? (document.elementFromPoint(clientX, clientY)?.closest(".pageWrap") as HTMLElement | null)
         : null;
     const page = Number(pageFromPointer?.dataset.page || activePage || 1);
-    const pageEl = pageRefs.current[page];
+    const pageEl = pageRefs.current[page]?.querySelector(".page");
     if (scroller && pageEl) {
       const scrollerRect = scroller.getBoundingClientRect();
       const pageRect = pageEl.getBoundingClientRect();
@@ -2628,7 +2796,7 @@ function App() {
     const scroller = documentScrollerRef.current;
     if (!anchor || !scroller) return;
     pendingZoomAnchorRef.current = null;
-    const pageEl = pageRefs.current[anchor.page];
+    const pageEl = pageRefs.current[anchor.page]?.querySelector(".page");
     if (!pageEl) return;
     const pageRect = pageEl.getBoundingClientRect();
     const targetX = pageRect.left + pageRect.width * anchor.xRatio;
@@ -2671,6 +2839,35 @@ function App() {
     void window.pdfFillerDesktop?.downloadUpdate({ reopenPath: currentPath ?? pendingInitialPdfRef.current?.path ?? null });
   };
 
+  const pageHandlers = useRef({
+    handlePagePointerDown, handlePagePointerMove, finishPagePointer, startAnnotationDrag, removeAnnotation, updateAnnotation, activateFillZone, setChoiceChecked,
+  });
+  pageHandlers.current = {
+    handlePagePointerDown, handlePagePointerMove, finishPagePointer, startAnnotationDrag, removeAnnotation, updateAnnotation, activateFillZone, setChoiceChecked,
+  };
+  const pageEvents = useMemo(() => ({
+    onPointerDown: (...args: Parameters<typeof handlePagePointerDown>) => pageHandlers.current.handlePagePointerDown(...args),
+    onPointerMove: (...args: Parameters<typeof handlePagePointerMove>) => pageHandlers.current.handlePagePointerMove(...args),
+    onPointerUp: () => pageHandlers.current.finishPagePointer(),
+    onPointerLeave: clearPlacementPreviews,
+    onAnnotationDrag: (...args: Parameters<typeof startAnnotationDrag>) => pageHandlers.current.startAnnotationDrag(...args),
+    onRemove: (id: string) => pageHandlers.current.removeAnnotation(id),
+    onUpdate: (id: string, patch: Partial<Annotation>) => pageHandlers.current.updateAnnotation(id, patch),
+    onFill: (zone: DetectedFillZone) => pageHandlers.current.activateFillZone(zone),
+    onToggleChoice: (id: string) => pageHandlers.current.setChoiceChecked(id),
+    onPageRef: (page: number, node: HTMLElement | null) => { pageRefs.current[page] = node; },
+    onSelect: (id: string) => {
+      setSelectedId(id);
+      setEditingId(null);
+    },
+    onEdit: (id: string) => {
+      const annotation = annotationsRef.current.find((candidate) => candidate.id === id);
+      if (annotation) setActivePage(annotation.page);
+      setSelectedId(id);
+      setEditingId(id);
+    },
+  }), [clearPlacementPreviews]);
+
   if (isDesktop && !startupReady) {
     return (
       <UpdateGate
@@ -2686,26 +2883,24 @@ function App() {
     <div className="shell">
       <header className="globalNav">
         <div className="globalBrand">
-          <span className="brandMark compact">PF</span>
-          <div className="globalBrandText">
-            <strong>PDF Filler</strong>
-            <span>v{appVersion}</span>
-          </div>
+          <span className="brandMark compact"><FileText size={18} /></span>
+          <strong>PDF Filler</strong>
         </div>
-        <nav className="menuBar" aria-label="Application menu">
+        <nav className="menuBar" ref={menuBarRef} aria-label="Application menu">
           {topMenus.map((menu) => (
             <div className="menuWrap" key={menu.title}>
               <button
                 className={activeMenu === menu.title ? "menuButton active" : "menuButton"}
                 onClick={() => setActiveMenu((current) => (current === menu.title ? null : menu.title))}
+                aria-expanded={activeMenu === menu.title}
               >
                 {menu.title}
-                {menu.title !== "Home" && <ChevronDown size={14} />}
+                <ChevronDown size={13} />
               </button>
               {activeMenu === menu.title && (
                 <div className="menuDropdown">
                   {menu.items.map((item) => (
-                    <button key={item} onClick={() => runTopMenuAction(item)}>
+                    <button key={item} disabled={!pdfDoc && !fileActionsWithoutDocument.has(item)} onClick={() => runTopMenuAction(item)}>
                       {item}
                     </button>
                   ))}
@@ -2714,56 +2909,44 @@ function App() {
             </div>
           ))}
         </nav>
+        <div className="fileActions">
+          <button onClick={() => document.getElementById("pdf-upload")?.click()} title="Open PDF" aria-label="Open PDF"><Upload size={16} /><span>Open</span></button>
+          <button disabled={!pdfDoc} onClick={() => void downloadPdf()} title="Export PDF" aria-label="Export"><Download size={16} /><span>Export</span></button>
+          <button className="primaryAction" disabled={!pdfDoc} onClick={() => void savePdf()} title="Save PDF" aria-label="Save"><Save size={16} /><span>Save</span></button>
+        </div>
       </header>
-      <div className="documentTabs" aria-label="Open PDFs">
+      <div className="documentTabs" aria-label="Open documents">
         {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={tab.id === activeTabId ? "docTab active" : "docTab"}
-            onClick={() => activateTab(tab.id)}
-            title={tab.fileName}
-          >
-            <FileText size={14} />
-            <span>{tab.fileName}</span>
-            {tab.isDirty && <strong>*</strong>}
-            <em
-              role="button"
-              tabIndex={0}
-              onClick={(event) => {
-                event.stopPropagation();
-                requestCloseTab(tab.id);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  requestCloseTab(tab.id);
-                }
-              }}
-              title="Close tab"
-            >
-              x
-            </em>
-          </button>
+          <div key={tab.id} className={tab.id === activeTabId ? "docTab active" : "docTab"}>
+            <button className="docTabTitle" onClick={() => activateTab(tab.id)} title={tab.fileName} aria-pressed={tab.id === activeTabId}>
+              <FileText size={14} />
+              <span>{tab.fileName}</span>
+              {tab.isDirty && <span className="dirtyDot" title="Unsaved changes" aria-label="Unsaved changes" />}
+            </button>
+            <button className="docTabClose" onClick={() => requestCloseTab(tab.id)} title="Close tab" aria-label={`Close ${tab.fileName}`}>
+              <X size={14} />
+            </button>
+          </div>
         ))}
       </div>
-      <main className="app">
+      <main className={`app${showInspector ? "" : " inspectorHidden"}`}>
       <aside className="rail" aria-label="Tools">
-        <div className="brand">
-          <span className="brandMark">PF</span>
-          <div>
-            <strong>PDF Filler</strong>
-            <span>Local desktop editor</span>
-          </div>
+        <div className="sidebarSwitch" aria-label="Sidebar">
+          <button aria-pressed={sidebarView === "tools"} onClick={() => setSidebarView("tools")}>Tools</button>
+          <button aria-pressed={sidebarView === "pages"} onClick={() => setSidebarView("pages")}>Pages</button>
         </div>
 
-        <div className="toolGroups">
-          <div className="toolSectionTitle">Tools</div>
+        {sidebarView === "tools" && <div className="toolGroups">
+          {toolGroups.map((group) => <section className="toolGroup" key={group.title}>
+          <h2 className="toolSectionTitle">{group.title}</h2>
           <div className="toolGrid">
-            {primaryTools.map(({ id, label, Icon }) => (
+            {group.tools.map((toolId) => {
+              const { id, label, Icon } = primaryTools.find((item) => item.id === toolId)!;
+              return (
               <button
                 className={tool === id ? "tool active" : "tool"}
                 key={id}
+                disabled={!pdfDoc}
                 onContextMenu={(event) => {
                   if (!["draw", "eraser", "line", "arrow", "circle", "rectangle", "highlight", "whiteout"].includes(id)) return;
                   event.preventDefault();
@@ -2780,13 +2963,16 @@ function App() {
                 }}
                 title={label}
                 aria-label={label}
+                aria-pressed={tool === id}
               >
-                <Icon size={18} />
+                <Icon size={16} />
                 <span>{label}</span>
               </button>
-            ))}
+              );
+            })}
           </div>
-        </div>
+          </section>)}
+        </div>}
         {toolMenu && (
           <ToolContextMenu
             menu={toolMenu}
@@ -2812,11 +2998,6 @@ function App() {
           />
         )}
 
-        <div className="railDivider" />
-        <button className="wideButton" onClick={() => document.getElementById("pdf-upload")?.click()}>
-          <Upload size={18} />
-          Open PDF
-        </button>
         <input
           hidden
           id="pdf-upload"
@@ -2824,6 +3005,7 @@ function App() {
           accept="application/pdf"
           onChange={(event) => {
             const file = event.target.files?.[0];
+            event.target.value = "";
             if (file) void loadPdf(file);
           }}
         />
@@ -2834,48 +3016,16 @@ function App() {
           accept="image/*"
           onChange={(event) => {
             const file = event.target.files?.[0];
-            if (!file || !pageSizes.length) return;
-            const reader = new FileReader();
-            reader.onload = () => {
-              addAnnotation({
-                id: uid("image"),
-                page: activePage,
-                type: "image",
-                x: 0.18,
-                y: 0.18,
-                w: 0.25,
-                h: 0.18,
-                dataUrl: String(reader.result),
-                label: file.name,
-              });
-            };
-            reader.readAsDataURL(file);
+            event.target.value = "";
+            if (file && pageSizes.length) void readPlacementImage(file);
           }}
         />
-        <button className="wideButton primary" disabled={!pdfBytes} onClick={() => void savePdf()}>
-          <Save size={18} />
-          Save
-        </button>
-        <button className="wideButton" disabled={!pdfBytes} onClick={() => void savePdf("saveAs")}>
-          <FilePlus2 size={18} />
-          Save As
-        </button>
-        <button className="wideButton" disabled={!pdfBytes} onClick={() => void downloadPdf()}>
-          <Download size={18} />
-          Export
-        </button>
-        <button className="wideButton" disabled={!pdfBytes} onClick={() => void printPdf()}>
-          <Printer size={18} />
-          Print
-        </button>
-        <button className="wideButton" disabled={!pdfBytes || pageSizes.length < 2} onClick={() => setOrganizeOpen(true)}>
-          <Columns3 size={18} />
-          Organize Pages
-        </button>
-
-        {pdfDoc && (
+        {sidebarView === "pages" && (
           <div className="thumbnailPane">
-            <div className="toolSectionTitle">Pages</div>
+            <button className="wideButton" disabled={!pdfDoc} onClick={() => setOrganizeOpen(true)}>
+              <Columns3 size={16} /> Organize pages
+            </button>
+            {!pdfDoc && <p className="muted">Open a PDF to see its pages.</p>}
             {pageSizes.map((pageSize, index) => (
               <Thumbnail
                 key={index}
@@ -2893,8 +3043,7 @@ function App() {
       <section className="workspace">
         <header className="topbar">
           <div className="documentTitle">
-            <strong>{pdfBytes ? fileName : "No PDF loaded"}</strong>
-            <span>{status}</span>
+            <strong>{primaryTools.find(({ id }) => id === tool)?.label}</strong>
           </div>
           <div className="topActions">
             <button onClick={() => rotateActivePage(-1)} disabled={!pdfBytes} title="Rotate page left">
@@ -2911,24 +3060,39 @@ function App() {
             </button>
             <button onClick={() => void checkTextOnActivePage()} disabled={!pdfDoc || ocrBusy} title="Check scanned or handwritten text on this page">
               <Wand2 size={17} />
-              Check text
+              <span>Check text</span>
             </button>
-            <button onClick={() => zoomBy(-0.1)} title="Zoom out">
-              <ZoomOut size={17} />
-            </button>
-            <span>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => zoomBy(0.1)} title="Zoom in">
-              <ZoomIn size={17} />
+            <button onClick={() => setShowInspector((current) => !current)} title="Toggle properties" aria-label="Toggle properties" aria-pressed={showInspector}>
+              <PanelRight size={17} />
             </button>
           </div>
         </header>
 
-        <div ref={documentScrollerRef} className={pdfDoc ? "documentScroller" : "documentScroller empty"}>
+        <div ref={documentScrollerRef} className={pdfDoc ? "documentScroller" : "documentScroller empty"}
+          onScroll={updateActivePageFromScroll}
+          onPointerDown={(event) => {
+            if (event.button === 0 && !(event.target as Element).closest(".page")) {
+              setSelectedId(null);
+              setEditingId(null);
+            }
+          }}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes("Files")) event.preventDefault();
+          }}
+          onDrop={(event) => {
+            const file = event.dataTransfer.files[0];
+            if (!file) return;
+            event.preventDefault();
+            if (/\.pdf$/i.test(file.name) || file.type === "application/pdf") void loadPdf(file);
+            else setStatus("Choose a PDF file.");
+          }}
+        >
           {!pdfDoc && (
             <label className="dropzone">
-              <Upload size={34} />
-              <strong>Open a PDF to begin editing</strong>
-              <span>Files, signatures, and saved output stay local on this computer.</span>
+              <span className="dropzoneIcon"><FileText size={32} /></span>
+              <strong>Open a PDF</strong>
+              <span>Drop a PDF here or browse your files.</span>
+              <span className="dropzoneAction"><Upload size={16} /> Browse files</span>
               <input
                 hidden
                 type="file"
@@ -2952,14 +3116,14 @@ function App() {
                 active={activePage === index + 1}
                 annotations={annotationsByPage.get(index + 1) ?? emptyAnnotations}
                 textZones={textZonesByPage.get(index + 1) ?? emptyTextZones}
-                formZones={formZonesByPage.get(index + 1) ?? emptyFormZones}
-                lineZones={lineZonesByPage.get(index + 1) ?? emptyLineZones}
+                fillZones={fillZonesByPage.get(index + 1) ?? emptyFillZones}
                 showTextZones={tool === "editText"}
-                showFillZones={tool === "text" || tool === "field"}
-                placementMode={["date", "signature", "initials", "checkbox", "radio", "checkmark"].includes(tool)}
-                erasing={tool === "eraser"}
-                selectedId={selectedId}
-                editingId={editingId}
+                fillMode={tool === "select"}
+                editFillEntries={tool === "select" || tool === "text"}
+                placementMode={["date", "signature", "initials", "checkbox", "radio", "checkmark", "image", "draw", "eraser", "whiteout", "highlight", "circle", "rectangle", "line", "arrow"].includes(tool)}
+                markupMode={["draw", "eraser", "whiteout", "highlight", "circle", "rectangle", "line", "arrow"].includes(tool)}
+                selectedId={selected?.page === index + 1 ? selectedId : null}
+                editingId={selected?.page === index + 1 ? editingId : null}
                 draftBox={draftBox?.page === index + 1 ? draftBox : null}
                 placementPreview={placementPreview?.page === index + 1 ? placementPreview : null}
                 imagePlacementPreview={imagePlacementPreview?.page === index + 1 ? imagePlacementPreview : null}
@@ -2968,46 +3132,46 @@ function App() {
                 eraserOpacity={eraserOpacity}
                 shapeStrokeColor={shapeStrokeColor}
                 shapeStrokeWidth={shapeStrokeWidth}
-                onPageRef={(node) => {
-                  pageRefs.current[index + 1] = node;
-                }}
-                onPointerDown={handlePagePointerDown}
-                onPointerMove={handlePagePointerMove}
-                onPointerUp={finishPagePointer}
-                onPointerLeave={clearPlacementPreviews}
-                onAnnotationDrag={startAnnotationDrag}
-                onRemove={removeAnnotation}
-                onSelect={(id) => {
-                  setSelectedId(id);
-                  setEditingId(null);
-                }}
-                onEdit={(id) => {
-                  setSelectedId(id);
-                  setEditingId(id);
-                }}
-                onUpdate={updateAnnotation}
-                onActive={() => setActivePage(index + 1)}
+                {...pageEvents}
                 onVisible={ensurePageAnalyzed}
               />
             ))}
         </div>
+        <footer className="documentStatus">
+          <span className="statusMessage" role="status" title={status}>{status}</span>
+          {pdfDoc && <>
+            <div className="statusControls" aria-label="Page navigation">
+              <button onClick={() => goToPage(activePage - 1)} disabled={activePage <= 1} title="Previous page" aria-label="Previous page"><ChevronLeft size={16} /></button>
+              <span>Page {activePage} of {pageSizes.length}</span>
+              <button onClick={() => goToPage(activePage + 1)} disabled={activePage >= pageSizes.length} title="Next page" aria-label="Next page"><ChevronRight size={16} /></button>
+            </div>
+            <div className="statusControls" aria-label="Zoom controls">
+              <button onClick={() => zoomBy(-0.1)} disabled={zoom <= 0.45} title="Zoom out" aria-label="Zoom out"><ZoomOut size={16} /></button>
+              <button className="zoomValue" onClick={() => zoomBy(getFitZoom(pageSizes[activePage - 1]) - zoom)} title="Fit page width" aria-label="Fit page width">{Math.round(zoom * 100)}%</button>
+              <button onClick={() => zoomBy(0.1)} disabled={zoom >= 2.5} title="Zoom in" aria-label="Zoom in"><ZoomIn size={16} /></button>
+            </div>
+          </>}
+        </footer>
       </section>
 
-      <aside className="inspector">
+      <aside className="inspector" hidden={!showInspector} aria-label="Properties">
+        <div className="inspectorHeader"><h2>Properties</h2><button onClick={() => setShowInspector(false)} title="Hide properties" aria-label="Hide properties"><X size={16} /></button></div>
         <section>
-          <h2>Selected</h2>
-          {!selected && <p className="muted">Choose a tool, then click the PDF. Text starts typing immediately.</p>}
+          {!selected && <p className="muted inspectorEmpty">Select an item on the page to edit its properties.</p>}
           {selected && (
             <SelectedInspector
               annotation={selected}
-              update={(patch) => updateAnnotation(selected.id, patch)}
+              update={(patch) => {
+                if (isChoiceAnnotation(selected) && isFixedFill(selected) && "checked" in patch) setChoiceChecked(selected.id, patch.checked);
+                else updateAnnotation(selected.id, patch);
+              }}
               remove={() => removeAnnotation(selected.id)}
             />
           )}
         </section>
 
-        <section>
-          <h2>Signatures</h2>
+        <details className="inspectorPanel">
+          <summary>Signatures</summary>
           <button className="wideButton" onClick={() => setSignatureModal("signature")}>
             <Plus size={18} />
             Add Signature
@@ -3028,10 +3192,10 @@ function App() {
             {selectedInitialAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.label}</option>)}
           </select>
           <AssetPreview asset={selectedInitialAssets.find((asset) => asset.id === activeInitials)} emptyLabel="No initials selected" />
-        </section>
+        </details>
 
-        <section>
-          <h2>Prefill</h2>
+        <details className="inspectorPanel">
+          <summary>Prefill</summary>
           <textarea
             value={prefillText}
             onChange={(event) => setPrefillText(event.target.value)}
@@ -3041,21 +3205,21 @@ function App() {
             <Wand2 size={18} />
             Populate
           </button>
-        </section>
+        </details>
 
-        <section>
-          <h2>Style</h2>
+        <details className="inspectorPanel">
+          <summary>Tool styles</summary>
           <label>Text color</label>
           <ColorRow value={textColor} onChange={setTextColor} />
           <label>Ink color</label>
           <ColorRow value={drawColor} onChange={setDrawColor} />
           <label>Ink width</label>
           <input type="range" min="1" max="12" value={drawWidth} onChange={(event) => setDrawWidth(Number(event.target.value))} />
-        </section>
+        </details>
 
         {isDesktop && (
-          <section>
-            <h2>Desktop</h2>
+          <details className="inspectorPanel">
+            <summary>Desktop settings</summary>
             <div className="versionBadge">
               <span>Installed version</span>
               <strong>{appVersion}</strong>
@@ -3139,7 +3303,7 @@ function App() {
               Check Updates
             </button>
             <p className="muted">{updateStatus}</p>
-          </section>
+          </details>
         )}
 
       </aside>
@@ -3319,7 +3483,7 @@ function AssetPreview({ asset, emptyLabel }: { asset?: SignatureAsset; emptyLabe
   );
 }
 
-function PdfPage({
+const PdfPage = memo(function PdfPage({
   doc,
   pageIndex,
   pageSize,
@@ -3327,12 +3491,12 @@ function PdfPage({
   active,
   annotations,
   textZones,
-  formZones,
-  lineZones,
+  fillZones,
   showTextZones,
-  showFillZones,
+  fillMode,
+  editFillEntries,
   placementMode,
-  erasing,
+  markupMode,
   selectedId,
   editingId,
   draftBox,
@@ -3353,7 +3517,8 @@ function PdfPage({
   onSelect,
   onEdit,
   onUpdate,
-  onActive,
+  onFill,
+  onToggleChoice,
   onVisible,
 }: {
   doc: any;
@@ -3363,23 +3528,23 @@ function PdfPage({
   active: boolean;
   annotations: Annotation[];
   textZones: TextZone[];
-  formZones: FormZone[];
-  lineZones: LineZone[];
+  fillZones: DetectedFillZone[];
   showTextZones: boolean;
-  showFillZones: boolean;
+  fillMode: boolean;
+  editFillEntries: boolean;
   placementMode: boolean;
-  erasing: boolean;
+  markupMode: boolean;
   selectedId: string | null;
   editingId: string | null;
   draftBox: DraftBox | null;
-  placementPreview: { page: number; x: number; y: number; tool: Tool } | null;
+  placementPreview: { page: number; x: number; y: number; tool: ChoiceAnnotation["type"] } | null;
   imagePlacementPreview: { page: number; x: number; y: number; w: number; h: number; dataUrl: string; label: string } | null;
   eraserPreview: { page: number; x: number; y: number } | null;
   eraserSize: number;
   eraserOpacity: number;
   shapeStrokeColor: string;
   shapeStrokeWidth: number;
-  onPageRef: (node: HTMLElement | null) => void;
+  onPageRef: (page: number, node: HTMLElement | null) => void;
   onPointerDown: (event: React.PointerEvent<HTMLDivElement>, pageIndex: number) => void;
   onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp: () => void;
@@ -3389,20 +3554,21 @@ function PdfPage({
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Annotation>) => void;
-  onActive: () => void;
+  onFill: (zone: DetectedFillZone) => void;
+  onToggleChoice: (id: string) => void;
   onVisible: (page: number) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLElement | null>(null);
   const [shouldRender, setShouldRender] = useState(false);
-  const [isRendered, setIsRendered] = useState(false);
+  const [renderedDocument, setRenderedDocument] = useState<unknown>(null);
+  const isRendered = renderedDocument === doc;
 
   useEffect(() => {
     if (!shouldRender) return;
     let cancelled = false;
     let renderTask: { cancel: () => void; promise: Promise<void> } | null = null;
     const render = async () => {
-      setIsRendered(false);
       const page = await doc.getPage(pageIndex + 1);
       const viewport = page.getViewport({ scale: zoom });
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
@@ -3433,19 +3599,16 @@ function PdfPage({
       visible.height = scratch.height;
       context.setTransform(1, 0, 0, 1, 0, 0);
       context.drawImage(scratch, 0, 0);
-      setIsRendered(true);
+      setRenderedDocument(doc);
     };
-    void render();
+    void render().catch((error) => {
+      if (!cancelled) console.warn("PDF page render failed", error);
+    });
     return () => {
       cancelled = true;
       renderTask?.cancel();
     };
   }, [doc, pageIndex, shouldRender, zoom]);
-
-  useEffect(() => {
-    setShouldRender(false);
-    setIsRendered(false);
-  }, [doc, pageIndex]);
 
   useEffect(() => {
     const node = wrapRef.current;
@@ -3467,45 +3630,56 @@ function PdfPage({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [onVisible, pageIndex]);
+  }, [doc, onVisible, pageIndex]);
 
   const setWrapRef = useCallback((node: HTMLElement | null) => {
     wrapRef.current = node;
-    onPageRef(node);
-  }, [onPageRef]);
+    onPageRef(pageIndex + 1, node);
+  }, [onPageRef, pageIndex]);
 
   const displayWidth = pageSize.width * zoom;
   const displayHeight = pageSize.height * zoom;
+  const filledTargets = new Set(annotations.flatMap((annotation) =>
+    (isChoiceAnnotation(annotation) || isTextAnnotation(annotation)) && annotation.detectedField ? [annotation.detectedField.id] : [],
+  ));
 
   return (
-    <article ref={setWrapRef} className={active ? "pageWrap active" : "pageWrap"} data-page={pageIndex + 1} onPointerEnter={onActive}>
+    <article ref={setWrapRef} className={active ? "pageWrap active" : "pageWrap"} data-page={pageIndex + 1} style={{ containIntrinsicSize: `${displayWidth}px ${displayHeight + 25}px` }}>
       <div className="pageNumber">Page {pageIndex + 1}</div>
       <div
-        className={placementMode ? "page placementMode" : "page"}
+        className={`page${placementMode ? " placementMode" : ""}${markupMode ? " markupMode" : ""}`}
         data-page={pageIndex + 1}
         style={{ width: displayWidth, height: displayHeight }}
         onPointerDown={(event) => onPointerDown(event, pageIndex)}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={() => {
-          onPointerUp();
-          onPointerLeave();
-        }}
+        onLostPointerCapture={onPointerUp}
         onPointerLeave={onPointerLeave}
       >
         <canvas ref={canvasRef} className={isRendered ? "pdfCanvas ready" : "pdfCanvas"} style={{ width: displayWidth, height: displayHeight }} />
         {!isRendered && <div className="pageLoading" aria-hidden="true" />}
         <div className="annotationLayer">
-          {showFillZones && formZones.map((zone) => <div key={zone.id} className="formZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title={zone.name} />)}
-          {showFillZones && lineZones.map((zone) => <div key={zone.id} className="lineZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} title="Click to fill" />)}
+          {fillMode && fillZones.filter((zone) => !filledTargets.has(zone.id)).map((zone) => (
+            <button
+              key={zone.id}
+              type="button"
+              className={`fillTarget ${zone.kind}`}
+              style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }}
+              aria-label={zone.label}
+              aria-pressed={zone.kind === "checkbox" ? false : undefined}
+              title={zone.label}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => onFill(zone)}
+            />
+          ))}
           {showTextZones && textZones.map((zone) => <div key={zone.id} className="textZone" style={{ left: `${zone.x * 100}%`, top: `${zone.y * 100}%`, width: `${zone.w * 100}%`, height: `${zone.h * 100}%` }} />)}
           {annotations.map((annotation) => (
             <AnnotationView
               key={annotation.id}
               annotation={annotation}
-              erasing={erasing}
               selected={selectedId === annotation.id}
               editing={editingId === annotation.id}
+              editFillEntries={editFillEntries}
               pageSize={pageSize}
               zoom={zoom}
               onDrag={onAnnotationDrag}
@@ -3513,6 +3687,7 @@ function PdfPage({
               onSelect={onSelect}
               onEdit={onEdit}
               onUpdate={onUpdate}
+              onToggleChoice={onToggleChoice}
             />
           ))}
           {draftBox && (
@@ -3538,27 +3713,27 @@ function PdfPage({
               )}
             </div>
           )}
-          {placementPreview && (
-            <div
-              className={`placementPreview ${placementPreview.tool}`}
-              style={{
-                left: `${(placementPreview.x - (placementPreview.tool === "date" ? 0 : 0.017)) * 100}%`,
-                top: `${(placementPreview.y - (placementPreview.tool === "date" ? 0 : 0.017)) * 100}%`,
-                width: placementPreview.tool === "date" ? "24%" : "3.4%",
-                height: placementPreview.tool === "date" ? "4.5%" : "3.4%",
-              }}
-            >
-              {placementPreview.tool === "date" ? formatAustralianDate() : placementPreview.tool === "radio" ? "o" : placementPreview.tool === "checkbox" ? "☑" : "✓"}
-            </div>
-          )}
+          {placementPreview && (() => {
+            const size = (placementPreview.tool === "checkmark" ? 20 : 17) * zoom;
+            return (
+              <div className="placementPreview" style={{
+                left: clamp(placementPreview.x * displayWidth - size / 2, 0, displayWidth - size),
+                top: clamp(placementPreview.y * displayHeight - size / 2, 0, displayHeight - size),
+                width: size,
+                height: size,
+              }}>
+                <ChoiceMark type={placementPreview.tool} checked />
+              </div>
+            );
+          })()}
           {imagePlacementPreview && (
             <img
               className="imagePlacementPreview"
               src={imagePlacementPreview.dataUrl}
               alt={imagePlacementPreview.label}
               style={{
-                left: `${(imagePlacementPreview.x - imagePlacementPreview.w / 2) * 100}%`,
-                top: `${(imagePlacementPreview.y - imagePlacementPreview.h / 2) * 100}%`,
+                left: `${imagePlacementPreview.x * 100}%`,
+                top: `${imagePlacementPreview.y * 100}%`,
                 width: `${imagePlacementPreview.w * 100}%`,
                 height: `${imagePlacementPreview.h * 100}%`,
               }}
@@ -3580,13 +3755,13 @@ function PdfPage({
       </div>
     </article>
   );
-}
+});
 
-function AnnotationView({
+const AnnotationView = memo(function AnnotationView({
   annotation,
-  erasing,
   selected,
   editing,
+  editFillEntries,
   pageSize,
   zoom,
   onDrag,
@@ -3594,11 +3769,12 @@ function AnnotationView({
   onSelect,
   onEdit,
   onUpdate,
+  onToggleChoice,
 }: {
   annotation: Annotation;
-  erasing: boolean;
   selected: boolean;
   editing: boolean;
+  editFillEntries: boolean;
   pageSize: PageSize;
   zoom: number;
   onDrag: (event: React.PointerEvent, annotation: Annotation, pageSize: PageSize, mode: "move" | "resize" | "rotate") => void;
@@ -3606,6 +3782,7 @@ function AnnotationView({
   onSelect: (id: string) => void;
   onEdit: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Annotation>) => void;
+  onToggleChoice: (id: string) => void;
 }) {
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement | null>(null);
 
@@ -3618,19 +3795,21 @@ function AnnotationView({
   }, [editing]);
 
   if (annotation.type === "draw") {
-    const path = annotation.points
+    const points = annotation.points.length === 1 ? [...annotation.points, annotation.points[0]] : annotation.points;
+    const path = points
       .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x * pageSize.width * zoom} ${point.y * pageSize.height * zoom}`)
       .join(" ");
     return (
-      <svg className="drawLayer" viewBox={`0 0 ${pageSize.width * zoom} ${pageSize.height * zoom}`} style={{ pointerEvents: erasing ? "none" : undefined }}>
+      <svg className="drawLayer" viewBox={`0 0 ${pageSize.width * zoom} ${pageSize.height * zoom}`}>
         <path
           d={path}
           fill="none"
           stroke={annotation.color}
           strokeLinecap="round"
           strokeLinejoin="round"
-          strokeWidth={annotation.width}
+          strokeWidth={annotation.width * zoom}
           onPointerDown={(event) => {
+            if (event.button !== 0 || !event.isPrimary) return;
             event.stopPropagation();
             onSelect(annotation.id);
           }}
@@ -3648,17 +3827,26 @@ function AnnotationView({
     transformOrigin: "center",
   };
   const watermarkCopies = Array.from({ length: 24 });
+  const fixed = isFixedFill(annotation);
+  const canFill = fixed && editFillEntries;
+  const fillLabel = isChoiceAnnotation(annotation) || isTextAnnotation(annotation)
+    ? annotation.detectedField?.label ?? (isChoiceAnnotation(annotation) ? annotation.sourceLabel ?? annotation.sourceFieldName : undefined)
+    : annotation.type === "field" ? annotation.name : undefined;
 
   return (
     <div
-      className={`annotation ${annotation.type} ${selected ? "selected" : ""} ${editing ? "editing" : ""}`}
-      style={{ ...style, pointerEvents: erasing ? "none" : undefined }}
+      className={`annotation ${annotation.type} ${selected ? "selected" : ""} ${editing ? "editing" : ""}${fixed ? " fixedFill" : ""}`}
+      style={style}
       onDoubleClick={(event) => {
         event.stopPropagation();
+        if (fixed) return;
         if (isTextAnnotation(annotation) || annotation.type === "field") onEdit(annotation.id);
         else onSelect(annotation.id);
       }}
-      onPointerDown={(event) => onDrag(event, annotation, pageSize, "move")}
+      onPointerDown={(event) => {
+        if (fixed) event.stopPropagation();
+        else onDrag(event, annotation, pageSize, "move");
+      }}
     >
       {isTextAnnotation(annotation) && annotation.type === "watermark" && annotation.repeat && (
         <div
@@ -3687,25 +3875,46 @@ function AnnotationView({
             value={annotation.text}
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onUpdate(annotation.id, { text: event.target.value })}
-            onBlur={() => undefined}
+            aria-label={fillLabel || "Annotation text"}
             style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.type === "detectedText" ? "transparent" : annotation.background ?? "transparent", opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}
           />
+        ) : canFill ? (
+          <button className="textAnnotation fillEntry" type="button" aria-label={fillLabel}
+            onClick={() => onEdit(annotation.id)}
+            style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400 }}>
+            {annotation.text}
+          </button>
         ) : (
           <div className="textAnnotation" style={{ color: annotation.color, fontSize: annotation.fontSize * zoom, fontWeight: annotation.bold ? 700 : 400, background: annotation.type === "detectedText" ? "transparent" : annotation.background, opacity: annotation.type === "watermark" ? annotation.opacity ?? 0.22 : 1 }}>
-            {annotation.text || "Type here"}
+            {annotation.text}
           </div>
         )
       )}
       {annotation.type === "field" && (
-        editing ? (
+        editing && annotation.multiline ? (
+          <textarea
+            ref={inputRef as React.RefObject<HTMLTextAreaElement>}
+            className="liveTextInput"
+            aria-label={annotation.name}
+            value={annotation.value}
+            onChange={(event) => onUpdate(annotation.id, { value: event.target.value })}
+            style={{ fontSize: annotation.fontSize * zoom }}
+          />
+        ) : editing ? (
           <input
             ref={inputRef as React.RefObject<HTMLInputElement>}
             className="liveTextInput"
+            aria-label={annotation.name}
             value={annotation.value}
             onPointerDown={(event) => event.stopPropagation()}
             onChange={(event) => onUpdate(annotation.id, { value: event.target.value })}
             style={{ fontSize: annotation.fontSize * zoom }}
           />
+        ) : canFill && !annotation.readOnly ? (
+          <button className="fieldAnnotation fillEntry" type="button" aria-label={annotation.name}
+            onClick={() => onEdit(annotation.id)} style={{ fontSize: annotation.fontSize * zoom }}>
+            {annotation.value}
+          </button>
         ) : (
           <div className="fieldAnnotation" style={{ fontSize: annotation.fontSize * zoom }}>{annotation.value}</div>
         )
@@ -3722,9 +3931,12 @@ function AnnotationView({
         />
       )}
       {isChoiceAnnotation(annotation) && (
-        <span className="checkmark">
-          {annotation.type === "radio" ? (annotation.checked ? "o" : "") : annotation.checked ? (annotation.mark === "check" ? "✓" : "X") : ""}
-        </span>
+        canFill && !annotation.readOnly ? (
+          <button className="fillEntry choice" type="button" aria-label={fillLabel || "Checkbox"} aria-pressed={annotation.checked}
+            onClick={() => onToggleChoice(annotation.id)}>
+            <ChoiceMark type={annotation.type} checked={annotation.checked} mark={annotation.mark} />
+          </button>
+        ) : <ChoiceMark type={annotation.type} checked={annotation.checked} mark={annotation.mark} />
       )}
       {(annotation.type === "arrow" || annotation.type === "line") && (
         <ArrowOverlay
@@ -3751,14 +3963,28 @@ function AnnotationView({
           }}
         />
       )}
-      {selected && (
+      {selected && !fixed && (
         <>
-          <button className="deleteBubble" onClick={(event) => { event.stopPropagation(); onRemove(annotation.id); }} title="Delete"><Trash2 size={13} /></button>
+          <button className="deleteBubble" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRemove(annotation.id); }} title="Delete" aria-label="Delete annotation"><Trash2 size={13} /></button>
           <button className="rotateHandle" onPointerDown={(event) => onDrag(event, annotation, pageSize, "rotate")} title="Drag to rotate"><RotateCw size={12} /></button>
-          <button className="resizeHandle" onPointerDown={(event) => onDrag(event, annotation, pageSize, "resize")} title="Resize" />
+          <button className="resizeHandle" onPointerDown={(event) => onDrag(event, annotation, pageSize, "resize")} title="Resize" aria-label="Resize annotation" />
         </>
       )}
     </div>
+  );
+});
+
+function ChoiceMark({ type, checked, mark = type === "checkmark" ? "check" : "x" }: Pick<ChoiceAnnotation, "type" | "checked" | "mark">) {
+  const points = mark === "check" ? [tickPoints] : crossPoints;
+  return (
+    <svg className="choiceMark" viewBox="0 0 100 100" fill="none" stroke={choiceInk} strokeWidth="8" aria-hidden="true">
+      {type === "checkbox" && <rect x="8" y="8" width="84" height="84" />}
+      {type === "radio" && <circle cx="50" cy="50" r="43" />}
+      {type === "radio" && checked && <circle cx="50" cy="50" r="23" fill={choiceInk} stroke="none" />}
+      {type !== "radio" && checked && points.map((path, index) => (
+        <polyline key={index} points={path.map((point) => point.join(",")).join(" ")} strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" />
+      ))}
+    </svg>
   );
 }
 
@@ -3873,10 +4099,12 @@ function Thumbnail({ doc, page, pageSize, active, onClick }: { doc: any; page: n
 }
 
 function SelectedInspector({ annotation, update, remove }: { annotation: Annotation; update: (patch: Partial<Annotation>) => void; remove: () => void }) {
+  const fixed = isFixedFill(annotation);
+  const label = (isTextAnnotation(annotation) || isChoiceAnnotation(annotation)) ? annotation.detectedField?.label : undefined;
   return (
     <div className="selectedTools">
-      <span className="pill">{annotation.type}</span>
-      {annotation.type !== "draw" && annotation.type !== "watermark" && (
+      <span className="pill">{label || annotation.type}</span>
+      {!fixed && annotation.type !== "draw" && annotation.type !== "watermark" && (
         <>
           <label>Rotation</label>
           <SignedNumberInput value={annotation.rotation ?? 0} min={-180} max={180} onCommit={(rotation) => update({ rotation })} />
@@ -3919,7 +4147,7 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
       {annotation.type === "field" && (
         <>
           <label>Field name</label>
-          <input value={annotation.name} onChange={(event) => update({ name: event.target.value })} />
+          <input value={annotation.name} readOnly={!!annotation.sourceFieldName} onChange={(event) => update({ name: event.target.value })} />
           <label>Value</label>
           <input value={annotation.value} onChange={(event) => update({ value: event.target.value })} />
         </>
@@ -3955,7 +4183,7 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
       {isChoiceAnnotation(annotation) && (
         <>
           <label className="checkRow"><input type="checkbox" checked={annotation.checked} onChange={(event) => update({ checked: event.target.checked })} /> Checked</label>
-          {annotation.type !== "radio" && (
+          {annotation.type !== "radio" && !annotation.sourceFieldName && (
             <>
               <label>Mark</label>
               <select value={annotation.mark ?? "x"} onChange={(event) => update({ mark: event.target.value as "check" | "x" })}>
@@ -3980,7 +4208,7 @@ function SelectedInspector({ annotation, update, remove }: { annotation: Annotat
           }} />
         </>
       )}
-      <button className="wideButton danger" onClick={remove}><Trash2 size={18} /> Delete Item</button>
+      <button className="wideButton danger" onClick={remove}><Trash2 size={18} /> {fixed ? "Clear field" : "Delete Item"}</button>
     </div>
   );
 }
